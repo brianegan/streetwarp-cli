@@ -1181,7 +1181,7 @@ fn small_metadata_result() -> MetadataResult {
 }
 
 #[tokio::test]
-async fn a_refused_minimap_stops_the_render_before_a_single_frame_is_paid_for() {
+async fn a_refused_minimap_stops_the_render_before_a_single_image_is_paid_for() {
     let fetcher = RecordingFetcher::refusing(b"map bytes", "staticmap");
     let cache = cache::Cache::disabled();
     let fetching = Fetching {
@@ -1207,9 +1207,12 @@ async fn a_refused_minimap_stops_the_render_before_a_single_frame_is_paid_for() 
         message.contains(minimap::MAPS_STATIC_ENABLE_URL),
         "{message}"
     );
+    // Street View *images* are the billed ones, and not one may be requested.
+    // Metadata requests are free and a real run issues them earlier still, since
+    // the overview map is framed around the panorama path they produce.
     assert!(
-        !fetcher.calls().iter().any(|u| u.contains("/streetview")),
-        "not one Street View frame should have been requested: {:?}",
+        !fetcher.calls().iter().any(|u| u.contains("/streetview?")),
+        "not one Street View image should have been requested: {:?}",
         fetcher.calls()
     );
     let _ = std::fs::remove_dir_all(&out_dir);
@@ -1407,9 +1410,28 @@ fn a_minimap_too_big_for_its_margin_is_still_placed_inside_the_frame() {
         480,
     )
     .unwrap();
-    let (x, y) = minimap::overlay_offsets(&plan, 640, 480);
-    assert!(x + plan.size_px <= 640, "x={x} size={}", plan.size_px);
-    assert!(y + plan.size_px <= 480, "y={y} size={}", plan.size_px);
+    for position in [
+        options::MinimapPosition::Tl,
+        options::MinimapPosition::Tr,
+        options::MinimapPosition::Bl,
+        options::MinimapPosition::Br,
+    ] {
+        let plan = minimap::MinimapPlan {
+            position,
+            ..plan
+        };
+        let (x, y) = minimap::overlay_offsets(&plan, 640, 480);
+        assert!(
+            x + plan.size_px <= 640,
+            "{position:?}: x={x} + size={} runs off a 640px frame",
+            plan.size_px
+        );
+        assert!(
+            y + plan.size_px <= 480,
+            "{position:?}: y={y} + size={} runs off a 480px frame",
+            plan.size_px
+        );
+    }
 }
 
 #[test]
@@ -1768,4 +1790,32 @@ fn a_rendered_overview_frame_puts_its_dot_at_the_projected_coordinate() {
         "the dot should be a dot, not a wash over the whole map"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_ffmpeg_pattern_reads_back_the_files_the_renderer_writes() {
+    // These live in different modules and are wired together only by the string
+    // they agree on, so a rename would otherwise fail at render time rather than
+    // at compile time.
+    let pattern = minimap::frame_pattern();
+    for index in [0usize, 7, 512] {
+        assert_eq!(
+            minimap::frame_filename(index),
+            pattern.replace("%d", &index.to_string()),
+            "ffmpeg would look for a file the renderer never wrote"
+        );
+    }
+}
+
+#[test]
+fn the_map_url_requests_the_scale_the_projection_assumes() {
+    // The projection doubles by MAP_SCALE, so the URL has to ask for exactly
+    // that scale. Confusing these two is the bug this pairing exists to prevent.
+    let plan = overview_plan();
+    let route = long_route(20);
+    let url = &minimap::minimap_urls(&plan, &route, &route, "test-key")[0];
+    assert!(
+        url.contains(&format!("scale={}", minimap::MAP_SCALE)),
+        "{url}"
+    );
 }

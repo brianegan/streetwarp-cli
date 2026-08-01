@@ -115,7 +115,7 @@ impl GPXPoint {
 /// The Street View image request for one point.
 fn streetview_image_url(point_bearing: &SerializablePointBearing, api_key: &str) -> String {
     format!(
-        "https://maps.googleapis.com/maps/api/streetview?size=640x480&location={},{}&fov=100&source=outdoor&heading={}&pitch=0&key={}",
+        "https://maps.googleapis.com/maps/api/streetview?size={VIDEO_WIDTH}x{VIDEO_HEIGHT}&location={},{}&fov=100&source=outdoor&heading={}&pitch=0&key={}",
         point_bearing.lat, point_bearing.lng, point_bearing.bearing, api_key
     )
 }

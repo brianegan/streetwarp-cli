@@ -236,7 +236,7 @@ pub fn build_map_url(request: &MapRequest) -> String {
             )
         };
         let mut url = format!(
-            "https://maps.googleapis.com/maps/api/staticmap?center={},{}&zoom={}&size={}x{}&scale=2&maptype=roadmap",
+            "https://maps.googleapis.com/maps/api/staticmap?center={},{}&zoom={}&size={}x{}&scale={MAP_SCALE}&maptype=roadmap",
             request.center.lat,
             request.center.lng,
             request.zoom,
@@ -457,24 +457,37 @@ pub fn minimap_urls(
 /// Pixel offsets of the minimap's top-left corner within the video frame.
 pub fn overlay_offsets(plan: &MinimapPlan, video_width: u32, video_height: u32) -> (u32, u32) {
     use crate::options::MinimapPosition::*;
-    // A minimap sized close to the frame leaves no room for its margin, so the
-    // far edge saturates at zero rather than wrapping around.
+    // A minimap sized close to the frame leaves no room for its margin. Each
+    // axis is clamped against its own extent, because a map that fits across a
+    // 640px width can still hang off a 480px height.
     let far = |extent: u32| extent.saturating_sub(plan.size_px + plan.margin_px);
-    let near = plan.margin_px.min(far(video_width).max(far(video_height)));
+    let near = |extent: u32| plan.margin_px.min(far(extent));
     match plan.position {
-        Tl => (near, near),
-        Tr => (far(video_width), near),
-        Bl => (near, far(video_height)),
+        Tl => (near(video_width), near(video_height)),
+        Tr => (far(video_width), near(video_height)),
+        Bl => (near(video_width), far(video_height)),
         Br => (far(video_width), far(video_height)),
     }
 }
 
-/// Filename of the minimap image for frame `index`.
+/// Suffix shared by every minimap frame.
 ///
 /// It sits beside the Street View frame it belongs to, under a different suffix
 /// so ffmpeg's `%d.jpg` sequence pattern never picks it up.
+const FRAME_SUFFIX: &str = "map.png";
+
+/// Filename of the minimap image for frame `index`.
 pub fn frame_filename(index: usize) -> String {
-    format!("{index}.map.png")
+    format!("{index}.{FRAME_SUFFIX}")
+}
+
+/// The ffmpeg sequence pattern that reads those frames back.
+///
+/// Derived from the same suffix as [`frame_filename`], because a rename that
+/// updated only one of the two would leave ffmpeg looking for files nothing
+/// writes, and fail at render time rather than compile time.
+pub fn frame_pattern() -> String {
+    format!("%d.{FRAME_SUFFIX}")
 }
 
 /// Write one minimap image per video frame into `out_dir`.

@@ -103,6 +103,7 @@ pub async fn create_timelapse<P: AsRef<Path>>(image_dir: P, num_images: usize, o
     } else {
         "%d.jpg"
     };
+    let size = format!("{VIDEO_WIDTH}x{VIDEO_HEIGHT}");
     ffmpeg(
         image_dir,
         &(move |frame| 100.0 * (frame as f64) / (num_images as f64)),
@@ -114,7 +115,7 @@ pub async fn create_timelapse<P: AsRef<Path>>(image_dir: P, num_images: usize, o
             "-i",
             pattern,
             "-s:v",
-            "640x480",
+            &size,
             "-c:v",
             "libx264",
             "-crf",
@@ -153,9 +154,10 @@ pub async fn finish_timelapse<P: AsRef<Path>>(
         // with Street View frame N. Interpolation raises the output rate past
         // this, and overlay holds each map frame across the gap.
         args.extend(
-            ["-framerate", "24", "-pattern_type", "sequence", "-start_number", "0", "-i", "%d.map.png"]
+            ["-framerate", "24", "-pattern_type", "sequence", "-start_number", "0", "-i"]
                 .map(String::from),
         );
+        args.push(crate::minimap::frame_pattern());
     }
     args.extend(
         [
