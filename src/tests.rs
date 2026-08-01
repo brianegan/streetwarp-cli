@@ -964,8 +964,8 @@ fn map_url_carries_both_routes_in_different_colours() {
         },
         zoom: 14,
         size_px: 200,
-        track: &track,
-        panorama: &panorama,
+        track: &[&track],
+        panorama: &[&panorama],
         api_key: "test-key",
     });
 
@@ -998,8 +998,8 @@ fn map_url_stays_under_the_length_limit_for_a_fifty_thousand_point_route() {
         },
         zoom: 12,
         size_px: 200,
-        track: &track,
-        panorama: &panorama,
+        track: &[&track],
+        panorama: &[&panorama],
         api_key: "test-key",
     });
     assert!(
@@ -1026,6 +1026,8 @@ fn map_url_stays_under_the_length_limit_in_follow_mode() {
     let route = long_route(50_000);
     let track = minimap::clip_to_view(&route, centre, 16, 200);
     let panorama = minimap::clip_to_view(&route, centre, 16, 200);
+    let track = track.iter().map(|r| r.as_slice()).collect::<Vec<_>>();
+    let panorama = panorama.iter().map(|r| r.as_slice()).collect::<Vec<_>>();
     let url = minimap::build_map_url(&minimap::MapRequest {
         center: centre,
         zoom: 16,
@@ -1048,16 +1050,16 @@ fn clip_to_view_drops_the_far_end_of_the_route_but_keeps_what_is_on_screen() {
         lng: -0.12,
     };
     let route = long_route(50_000);
-    let clipped = minimap::clip_to_view(&route, centre, 16, 200);
+    let kept = minimap::clip_to_view(&route, centre, 16, 200).concat();
 
-    assert!(!clipped.is_empty(), "the centre of the route is on screen");
+    assert!(!kept.is_empty(), "the centre of the route is on screen");
     assert!(
-        clipped.len() < route.len(),
+        kept.len() < route.len(),
         "a route running far off the map should not survive whole"
     );
     // The last point is a full degree away, nowhere near a zoom-16 window.
     assert!(
-        !clipped.contains(route.last().unwrap()),
+        !kept.contains(route.last().unwrap()),
         "a point far off screen should have been clipped"
     );
 }
@@ -1928,4 +1930,156 @@ async fn the_probe_costs_one_map_not_one_per_frame() {
         .count();
     assert_eq!(maps, 1, "the probe should cost exactly one map request");
     let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+// A follow-mode window is small enough that a real route leaves it and comes
+// back: a switchback, an out-and-back, a loop. The clipped points either side of
+// that excursion are not one line, and drawing them as one puts a chord across
+// the map that the rider never travelled. On a feature whose whole job is
+// showing where the route actually went, a false line is the worst kind of bug.
+
+/// A route that crosses the follow window, wanders well off it, and crosses back.
+fn route_that_leaves_and_returns() -> (minimap::LatLng, Vec<minimap::LatLng>) {
+    let centre = minimap::LatLng {
+        lat: 51.5,
+        lng: -0.12,
+    };
+    let mut route = Vec::new();
+    // West to east straight through the middle.
+    for i in 0..40 {
+        route.push(minimap::LatLng {
+            lat: 51.5,
+            lng: -0.1230 + i as f64 * 0.0002,
+        });
+    }
+    // A long excursion north, far outside the window.
+    for i in 1..40 {
+        route.push(minimap::LatLng {
+            lat: 51.5 + i as f64 * 0.0008,
+            lng: -0.1150,
+        });
+    }
+    // Back down and east to west through the middle again, just north of the
+    // first pass.
+    for i in 0..40 {
+        route.push(minimap::LatLng {
+            lat: 51.5004,
+            lng: -0.1150 - i as f64 * 0.0002,
+        });
+    }
+    (centre, route)
+}
+
+#[test]
+fn clipping_splits_a_route_that_leaves_the_window_and_comes_back() {
+    let (centre, route) = route_that_leaves_and_returns();
+    let runs = minimap::clip_to_view(&route, centre, 16, 144);
+
+    assert!(
+        runs.len() >= 2,
+        "two passes through the window are two separate lines, got {} run(s)",
+        runs.len()
+    );
+    assert!(
+        runs.iter().all(|run| !run.is_empty()),
+        "an empty run would draw nothing and waste a path parameter"
+    );
+}
+
+#[test]
+fn a_route_that_leaves_the_window_is_drawn_without_a_chord_across_it() {
+    let (centre, route) = route_that_leaves_and_returns();
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+    let urls = minimap::minimap_urls(&plan, &route, &route, "test-key");
+
+    // Centre the map on the middle of the first pass, where the route is on
+    // screen and the excursion is not.
+    let here = urls
+        .iter()
+        .enumerate()
+        .find(|(i, _)| {
+            let p = route[*i];
+            (p.lat - centre.lat).abs() < 1e-9 && (p.lng - centre.lng).abs() < 1e-4
+        })
+        .map(|(_, url)| url)
+        .expect("no frame near the centre of the window");
+
+    let runs = minimap::clip_to_view(&route, centre, 16, plan.size_px);
+    // One path per contiguous run, for each of the two lines drawn.
+    assert!(
+        here.matches("path=").count() >= runs.len() * 2,
+        "expected a path per run for both lines, got {} for {} run(s): {here}",
+        here.matches("path=").count(),
+        runs.len()
+    );
+}
+
+#[test]
+fn a_route_crossing_the_window_many_times_still_fits_the_url_limit() {
+    // Many runs mean many path parameters, so the length budget has to be shared
+    // across all of them rather than spent per run.
+    let mut route = Vec::new();
+    for pass in 0..30 {
+        for i in 0..60 {
+            route.push(minimap::LatLng {
+                lat: 51.5 + (pass as f64) * 0.00002,
+                lng: -0.1240 + i as f64 * 0.0001,
+            });
+        }
+    }
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+
+    for url in minimap::minimap_urls(&plan, &route, &route, "test-key") {
+        assert!(
+            url.len() <= minimap::MAX_URL_LEN,
+            "a many-run follow url was {} characters",
+            url.len()
+        );
+    }
+}
+
+#[test]
+fn the_probe_asks_for_a_map_the_render_will_ask_for_again() {
+    // The probe is only free when the real fetch repeats its request and the
+    // cache answers. A probe that asked for something slightly different would
+    // cost a wasted map on every single run.
+    for mode in [options::MinimapMode::Overview, options::MinimapMode::Follow] {
+        let plan = minimap::MinimapPlan::resolve(
+            mode,
+            options::MinimapPosition::Br,
+            30,
+            12,
+            16,
+            640,
+            480,
+        )
+        .unwrap();
+        let (_, route) = route_that_leaves_and_returns();
+
+        let probe = minimap::probe_url(&plan, &route, &route, "test-key").unwrap();
+        let first = minimap::minimap_urls(&plan, &route, &route, "test-key")
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(probe, first, "{mode:?} probe diverged from the real request");
+    }
 }

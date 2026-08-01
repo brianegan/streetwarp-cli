@@ -294,9 +294,8 @@ async fn fetch_render_inputs<F: Fetch, P: AsRef<Path>>(
         // cache makes this free when that later fetch asks for the same image.
         progress_stage("Checking the minimap can be fetched");
         let (track, panorama) = route_lines(metadata_result);
-        let urls = minimap::minimap_urls(plan, &track, &panorama, fetching.api_key);
-        if let Some(probe) = urls.first() {
-            fetching.minimaps(std::slice::from_ref(probe)).await?;
+        if let Some(probe) = minimap::probe_url(plan, &track, &panorama, fetching.api_key) {
+            fetching.minimaps(std::slice::from_ref(&probe)).await?;
         }
     }
 

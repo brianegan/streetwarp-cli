@@ -173,11 +173,12 @@ pub struct MapRequest<'a> {
     pub center: LatLng,
     pub zoom: u32,
     pub size_px: u32,
-    /// The route as recorded in the GPX file.
-    pub track: &'a [LatLng],
+    /// The route as recorded in the GPX file, as contiguous runs. Overview mode
+    /// has one run; follow mode has one per pass through the window.
+    pub track: &'a [&'a [LatLng]],
     /// Where the rendered frames actually sit, after Google snapped each sample
-    /// to its nearest panorama.
-    pub panorama: &'a [LatLng],
+    /// to its nearest panorama. Split into runs the same way.
+    pub panorama: &'a [&'a [LatLng]],
     pub api_key: &'a str,
 }
 
@@ -204,22 +205,43 @@ pub fn downsample(points: &[LatLng], max: usize) -> Vec<LatLng> {
 /// Keep the points that fall inside the map's footprint, along with the
 /// neighbour on each side of every run, so a line crossing the frame still
 /// reaches its edges instead of stopping short.
-pub fn clip_to_view(points: &[LatLng], center: LatLng, zoom: u32, size_px: u32) -> Vec<LatLng> {
+pub fn clip_to_view(
+    points: &[LatLng],
+    center: LatLng,
+    zoom: u32,
+    size_px: u32,
+) -> Vec<Vec<LatLng>> {
     let on_screen = |p: &LatLng| {
         let (x, y) = project(*p, center, zoom, size_px);
         let limit = size_px as f64;
         (0.0..=limit).contains(&x) && (0.0..=limit).contains(&y)
     };
-    points
-        .iter()
-        .enumerate()
-        .filter(|&(i, p)| {
-            on_screen(p)
-                || i.checked_sub(1).is_some_and(|before| on_screen(&points[before]))
-                || points.get(i + 1).is_some_and(on_screen)
-        })
-        .map(|(_, p)| *p)
-        .collect()
+
+    let mut runs: Vec<Vec<LatLng>> = Vec::new();
+    let mut run: Vec<LatLng> = Vec::new();
+    for (i, point) in points.iter().enumerate() {
+        let keep = on_screen(point)
+            || i.checked_sub(1)
+                .is_some_and(|before| on_screen(&points[before]))
+            || points.get(i + 1).is_some_and(on_screen);
+        if keep {
+            run.push(*point);
+        } else if !run.is_empty() {
+            // The route has left the window. Close this run rather than letting
+            // it join up with wherever the route comes back, which would draw a
+            // straight line across the map that was never travelled.
+            runs.push(std::mem::take(&mut run));
+        }
+    }
+    if !run.is_empty() {
+        runs.push(run);
+    }
+    runs
+}
+
+/// Borrow each run as a slice, for handing to [`MapRequest`].
+fn as_slices(runs: &[Vec<LatLng>]) -> Vec<&[LatLng]> {
+    runs.iter().map(|r| r.as_slice()).collect()
 }
 
 /// Build the Static Maps request for one minimap image.
@@ -227,13 +249,25 @@ pub fn clip_to_view(points: &[LatLng], center: LatLng, zoom: u32, size_px: u32) 
 /// Both routes ride in the same request, downsampled as far as needed to stay
 /// under [`MAX_URL_LEN`].
 pub fn build_map_url(request: &MapRequest) -> String {
+    let total_points =
+        |runs: &[&[LatLng]]| runs.iter().map(|r| r.len()).sum::<usize>().max(1);
     let render = |budget: usize| {
-        let path = |points: &[LatLng], color: &str, weight: u32| {
-            let encoded = encode_polyline(&downsample(points, budget));
-            format!(
-                "&path={}",
-                percent_encode(&format!("color:{color}|weight:{weight}|enc:{encoded}"))
-            )
+        // The budget is the whole line's, shared out across its runs in
+        // proportion to their length, so a route that crosses the window thirty
+        // times cannot spend thirty budgets' worth of URL.
+        let path = |runs: &[&[LatLng]], color: &str, weight: u32| {
+            let total = total_points(runs);
+            runs.iter()
+                .filter(|run| run.len() >= 2)
+                .map(|run| {
+                    let share = (budget * run.len() / total).max(2);
+                    let encoded = encode_polyline(&downsample(run, share));
+                    format!(
+                        "&path={}",
+                        percent_encode(&format!("color:{color}|weight:{weight}|enc:{encoded}"))
+                    )
+                })
+                .collect::<String>()
         };
         let mut url = format!(
             "https://maps.googleapis.com/maps/api/staticmap?center={},{}&zoom={}&size={}x{}&scale={MAP_SCALE}&maptype=roadmap",
@@ -243,17 +277,13 @@ pub fn build_map_url(request: &MapRequest) -> String {
             request.size_px,
             request.size_px
         );
-        if !request.track.is_empty() {
-            url.push_str(&path(request.track, TRACK_COLOR, 2));
-        }
-        if !request.panorama.is_empty() {
-            url.push_str(&path(request.panorama, PANORAMA_COLOR, 3));
-        }
+        url.push_str(&path(request.track, TRACK_COLOR, 2));
+        url.push_str(&path(request.panorama, PANORAMA_COLOR, 3));
         url.push_str(&format!("&key={}", request.api_key));
         url
     };
 
-    let mut budget = request.track.len().max(request.panorama.len()).max(1);
+    let mut budget = total_points(request.track).max(total_points(request.panorama));
     loop {
         let url = render(budget);
         // Two points is the shortest thing still worth calling a line, so stop
@@ -430,14 +460,16 @@ pub fn minimap_urls(
                 center,
                 zoom,
                 size_px: plan.size_px,
-                track,
-                panorama,
+                track: &[track],
+                panorama: &[panorama],
                 api_key,
             })]
         }
         Mode::Follow => panorama
             .iter()
             .map(|here| {
+                let track_runs = clip_to_view(track, *here, plan.zoom, plan.size_px);
+                let panorama_runs = clip_to_view(panorama, *here, plan.zoom, plan.size_px);
                 build_map_url(&MapRequest {
                     center: *here,
                     zoom: plan.zoom,
@@ -445,8 +477,8 @@ pub fn minimap_urls(
                     // At follow zoom the whole route is mostly off screen, so
                     // send only what the window can show. Downsampling the full
                     // route instead would draw a coarse zigzag through it.
-                    track: &clip_to_view(track, *here, plan.zoom, plan.size_px),
-                    panorama: &clip_to_view(panorama, *here, plan.zoom, plan.size_px),
+                    track: &as_slices(&track_runs),
+                    panorama: &as_slices(&panorama_runs),
                     api_key,
                 })
             })
@@ -475,6 +507,37 @@ pub fn overlay_offsets(plan: &MinimapPlan, video_width: u32, video_height: u32) 
 /// It sits beside the Street View frame it belongs to, under a different suffix
 /// so ffmpeg's `%d.jpg` sequence pattern never picks it up.
 const FRAME_SUFFIX: &str = "map.png";
+
+/// The single request used to check the Maps Static API answers before any
+/// Street View frame is paid for.
+///
+/// Built on its own rather than by taking the first of [`minimap_urls`]. In
+/// follow mode that would clip the whole route once per frame to produce URLs
+/// that are then thrown away, which on a long route is minutes of work before
+/// the check has even run.
+pub fn probe_url(
+    plan: &MinimapPlan,
+    track: &[LatLng],
+    panorama: &[LatLng],
+    api_key: &str,
+) -> Option<String> {
+    match plan.mode {
+        Mode::Overview => minimap_urls(plan, track, panorama, api_key).into_iter().next(),
+        Mode::Follow => {
+            let here = *panorama.first()?;
+            let track_runs = clip_to_view(track, here, plan.zoom, plan.size_px);
+            let panorama_runs = clip_to_view(panorama, here, plan.zoom, plan.size_px);
+            Some(build_map_url(&MapRequest {
+                center: here,
+                zoom: plan.zoom,
+                size_px: plan.size_px,
+                track: &as_slices(&track_runs),
+                panorama: &as_slices(&panorama_runs),
+                api_key,
+            }))
+        }
+    }
+}
 
 /// Filename of the minimap image for frame `index`.
 pub fn frame_filename(index: usize) -> String {

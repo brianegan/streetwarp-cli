@@ -43,9 +43,9 @@ writing_style: humanizer
 # either invokes a skill or runs a shell command. Replace this example with your
 # project's own checks.
 gate:
-#   # How many fixes `/sapa-gate` applies and re-runs for one failing gate before
-#   # it stops and hands the stream back. 0 never autofixes. Default: 3.
-#   max_fix_attempts: 3
+  # How many fixes `/sapa-gate` applies and re-runs for one failing gate before
+  # it stops and hands the stream back. 0 never autofixes. Default: 3.
+  max_fix_attempts: 10
   steps:
     - name: test
       run: cargo test
