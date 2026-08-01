@@ -322,8 +322,8 @@ pub fn build_map_url(request: &MapRequest) -> String {
             request.size_px,
             request.size_px
         );
-        url.push_str(&path(request.track, TRACK_COLOR, 2));
-        url.push_str(&path(request.panorama, PANORAMA_COLOR, 3));
+        url.push_str(&path(request.track, TRACK_COLOR, 5));
+        url.push_str(&path(request.panorama, PANORAMA_COLOR, 2));
         url.push_str(&format!("&key={}", request.api_key));
         url
     };
@@ -428,6 +428,16 @@ impl MinimapPlan {
 const DOT_FILL: image::Rgba<u8> = image::Rgba([255, 255, 255, 255]);
 const DOT_RING: image::Rgba<u8> = image::Rgba([17, 17, 17, 255]);
 
+/// Radius of the position dot's outer ring in image pixels.
+///
+/// The framing inset and the stamp both read the dot's size from here. When the
+/// framing did not know how big the dot was, it fitted the route flush to the
+/// image edges and the dot at either end of a route hung over the side.
+pub fn dot_ring_radius(image_size_px: u32) -> f64 {
+    let radius = (image_size_px as f64 / 34.0).max(2.5);
+    radius + (radius / 2.5).max(1.0)
+}
+
 /// Draw the position dot at `(x, y)` on a copy of `map`.
 ///
 /// Coordinates outside the image are drawn as far as they reach, so a dot on the
@@ -437,8 +447,8 @@ pub fn stamp_dot(map: &image::RgbaImage, x: f64, y: f64) -> image::RgbaImage {
     let (width, height) = stamped.dimensions();
     // Scale the dot with the map so it stays the same visual size whatever the
     // minimap is sized to, but never shrink it below something you can see.
-    let radius = (width.min(height) as f64 / 22.0).max(3.0);
-    let ring = radius + (radius / 2.5).max(1.0);
+    let ring = dot_ring_radius(width.min(height));
+    let radius = ring / 1.4;
 
     let left = (x - ring).floor().max(0.0) as u32;
     let top = (y - ring).floor().max(0.0) as u32;
@@ -487,7 +497,12 @@ pub fn overview_framing(
     // comes back. `scale=2` doubles the pixels and leaves the coverage alone, so
     // fitting against the doubled figure would choose a zoom one level too deep
     // and run the route off the edges of the map.
-    Some((bounds.center(), fit_zoom(bounds, plan.size_px)))
+    //
+    // Inset by the dot, because the route's extremes are exactly where the first
+    // and last dots sit and a flush fit leaves them hanging over the border.
+    let inset = (dot_ring_radius(plan.size_px * MAP_SCALE) / MAP_SCALE as f64).ceil() as u32;
+    let usable = plan.size_px.saturating_sub(inset * 2).max(1);
+    Some((bounds.center(), fit_zoom(bounds, usable)))
 }
 
 /// Where a coordinate lands within the fetched map image, in image pixels.

@@ -2277,3 +2277,84 @@ fn redaction_handles_a_message_carrying_more_than_one_key() {
         "first https://a?key=REDACTED then https://b?key=REDACTED"
     );
 }
+
+// What a real render showed that no synthetic test did.
+
+#[test]
+fn the_dot_never_hangs_over_the_edge_of_the_map() {
+    // Framing the route to touch the image edges puts the first and last dots
+    // half outside it, which is on screen at the start and end of every video.
+    // Asserting the dot's centre is inside is not enough; its radius has to fit
+    // too.
+    // Swept across route sizes rather than tried on one. `fit_zoom` floors the
+    // zoom, so most routes sit well inside the image with slack to spare and a
+    // single hand-picked route says nothing. Only the sizes that land flush
+    // against the fit boundary put a dot on the border, and the sweep is what
+    // finds them.
+    let plan = overview_plan();
+    let image = (plan.size_px * minimap::MAP_SCALE) as f64;
+    let ring = minimap::dot_ring_radius(plan.size_px * minimap::MAP_SCALE);
+
+    for millionths in 1..400u32 {
+        let step = millionths as f64 * 1e-6;
+        let route = (0..50)
+            .map(|i| minimap::LatLng {
+                lat: 51.5 + (i as f64) * step * 0.6,
+                lng: -0.12 + (i as f64) * step,
+            })
+            .collect::<Vec<_>>();
+        let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+
+        for point in [route.first().unwrap(), route.last().unwrap()] {
+            let (x, y) = minimap::image_pixel(*point, centre, zoom, plan.size_px);
+            assert!(
+                x - ring >= 0.0 && x + ring <= image,
+                "step {step:.6}: a dot of radius {ring:.1} at x={x:.1} spills outside a {image:.0}px map"
+            );
+            assert!(
+                y - ring >= 0.0 && y + ring <= image,
+                "step {step:.6}: a dot of radius {ring:.1} at y={y:.1} spills outside a {image:.0}px map"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_dot_is_a_marker_not_a_blob() {
+    // At the size it shipped with, the dot covered an eighth of the minimap and
+    // buried the route under itself.
+    let image = 288u32;
+    let ring = minimap::dot_ring_radius(image);
+    assert!(
+        ring * 2.0 < image as f64 * 0.10,
+        "the dot spans {:.0} of {image} pixels",
+        ring * 2.0
+    );
+}
+
+#[test]
+fn the_planned_track_is_drawn_thicker_than_the_path_actually_followed() {
+    // The thinner line goes on top. Where the two agree you see the followed
+    // path with the planned track showing around it, which is what tells you
+    // both were drawn at all rather than one silently missing.
+    let plan = overview_plan();
+    let route = long_route(20);
+    let url = &minimap::minimap_urls(&plan, &route, &route, "test-key")[0];
+
+    let weights = url
+        .split("path=")
+        .skip(1)
+        .filter_map(|p| {
+            let at = p.find("weight%3A")? + "weight%3A".len();
+            p[at..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().ok()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(weights.len(), 2, "{url}");
+    assert!(
+        weights[0] > weights[1],
+        "the planned track ({}) must be thicker than the followed path ({})",
+        weights[0],
+        weights[1]
+    );
+}
