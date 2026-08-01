@@ -2129,15 +2129,15 @@ fn a_route_lapping_the_window_two_hundred_times_still_fits_the_url_limit() {
 
 #[test]
 fn a_route_flickering_in_and_out_of_the_window_still_fits_the_url_limit() {
-    // The pathological shape for run splitting: every other point is off screen,
-    // so the route shatters into thousands of three-point runs. Nothing about
-    // thinning points can help here, and it is the case that decides whether the
-    // budget floor is genuinely a floor.
-    // Three points off screen between each visible one, not one. Clipping keeps
-    // an off-screen point whose neighbour is visible, so a single excursion
-    // point never breaks a run: only the middle of three has both neighbours off
-    // screen and gets dropped. One-in-one-out would produce a single long run
-    // and quietly test nothing.
+    // The pathological shape for run splitting: one visible point, then three
+    // off screen, repeated. Three and not one, because clipping keeps an
+    // off-screen point whose neighbour is visible, so only the middle of three
+    // has both neighbours off screen and gets dropped. One-in-one-out breaks
+    // nothing and leaves a single long run that tests nothing at all.
+    //
+    // The route shatters into around 1,500 short runs, which no amount of point
+    // thinning can shrink below one path each. That is what makes this the case
+    // deciding whether the budget floor is genuinely a floor.
     let mut route = Vec::new();
     for i in 0..1500 {
         route.push(minimap::LatLng {
