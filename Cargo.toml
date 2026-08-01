@@ -2,22 +2,17 @@
 name = "streetwarp"
 version = "0.1.0"
 authors = ["Peter Elmers <peter.elmers@yahoo.com>"]
-edition = "2018"
+edition = "2024"
 
 [dependencies]
 gpx = "0.10.0"
-geo = "^0.14"
-structopt = "0.3.16"
-tokio = { version ="0.2.22", features =["full"] }
-reqwest = "0.10.7"
-futures = "0.3.5"
-rayon = "1.3.1"
-lazy_static = "1.4.0"
-serde_json = "1.0.57"
-serde_derive = "1.0.115"
-serde = "1.0.115"
-ordered-float = "2.0.0"
-fs_extra = "1.2.0"
-
-[patch.crates-io]
-gpx = { git = 'https://github.com/pelmers/gpx', branch = 'parse-copyright' }
+geo = "0.33"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = "0.13"
+futures = "0.3"
+rayon = "1"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+ordered-float = "5"
+fs_extra = "1.3"

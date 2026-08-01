@@ -20,8 +20,11 @@ pub async fn ffmpeg<P: AsRef<Path>>(working_dir: P, get_progress: &GetProgress, 
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     // Ensure the child process is spawned in the runtime so it can
     // make progress on its own while we await for any output.
-    let thread = tokio::spawn(async {
-        child.await.expect("child process encountered an error");
+    let thread = tokio::spawn(async move {
+        child
+            .wait()
+            .await
+            .expect("child process encountered an error");
     });
 
     while let Some(line) = reader.next_line().await.expect("ffmpeg readline failure") {

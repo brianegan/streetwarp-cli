@@ -3,15 +3,17 @@ use std::path::Path;
 use tokio::process::Command;
 
 use crate::options::CLI_OPTIONS;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 
 pub async fn optimize_sequence<P: AsRef<Path>>(image_dir: &P) -> Vec<usize> {
     let optimizer_cmd = CLI_OPTIONS.optimizer.clone().unwrap();
-    let mut args = vec![image_dir
-        .as_ref()
-        .to_str()
-        .expect("Could not stringify image_dir")
-        .to_string()];
+    let mut args = vec![
+        image_dir
+            .as_ref()
+            .to_str()
+            .expect("Could not stringify image_dir")
+            .to_string(),
+    ];
     if let Some(arg) = CLI_OPTIONS.optimizer_arg.clone() {
         args.push(arg)
     }
@@ -34,25 +36,23 @@ pub async fn optimize_sequence<P: AsRef<Path>>(image_dir: &P) -> Vec<usize> {
 
     stream::iter(kept_indices.iter().enumerate())
         .for_each(|(to, from)| async move {
-            let from_filename = image_dir.as_ref().join(format!("{}.jpg", &from));
-            let to_filename = image_dir.as_ref().join(format!("{}.opt.jpg", &to));
+            let from_filename = image_dir.as_ref().join(format!("{}.jpg", from));
+            let to_filename = image_dir.as_ref().join(format!("{}.opt.jpg", to));
             let res = tokio::fs::rename(&from_filename, &to_filename).await;
             if !res.is_ok() {
-                let dir_files = get_dir_content(&image_dir)
-                    .expect(&format!(
-                        "Could not get contents of {:?}",
-                        image_dir.as_ref()
-                    ))
+                let dir_files = get_dir_content(image_dir)
+                    .unwrap_or_else(|_| {
+                        panic!("Could not get contents of {:?}", image_dir.as_ref())
+                    })
                     .files;
                 eprintln!(
                     "file operation error detected, current folder contents are {:?}",
-                    &dir_files
+                    dir_files
                 );
             }
-            res.expect(&format!(
-                "Could not move {:?} to {:?}",
-                &from_filename, &to_filename
-            ));
+            res.unwrap_or_else(|_| {
+                panic!("Could not move {:?} to {:?}", from_filename, to_filename)
+            });
         })
         .await;
     kept_indices

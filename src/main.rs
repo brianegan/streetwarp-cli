@@ -1,8 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
-
-#[macro_use]
-extern crate serde_derive;
 mod ffmpeg;
 mod optim;
 mod options;
@@ -11,17 +6,19 @@ mod progress;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
-use gpx::{read, Gpx};
+use gpx::{Gpx, read};
 
-use geo::{prelude::*, Point};
+use geo::{Bearing, Distance, Geodesic, Haversine, InterpolatePoint, Point};
 
 use fs_extra::dir::{get_dir_content, get_size};
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use rayon::prelude::*;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 use ffmpeg::*;
 use options::CLI_OPTIONS;
@@ -56,7 +53,10 @@ struct SerializablePointBearing {
 
 #[derive(Deserialize, Debug, Clone)]
 struct GSVMetadata {
+    /// Only ever surfaces through the `Debug` output when a point's metadata
+    /// comes back not-OK, which dead-code analysis cannot see.
     #[serde(default)]
+    #[allow(dead_code)]
     date: String,
 
     #[serde(default)]
@@ -75,15 +75,18 @@ struct PointBearing {
     bearing: f64,
 }
 
+/// Serialized as camelCase to keep the on-the-wire JSON contract that
+/// `--use-metadata` reads back and downstream consumers expect.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct MetadataResult {
     distance: f64,
     frames: usize,
-    gpsPoints: Vec<SerializablePointBearing>,
-    originalPoints: Vec<GPXPoint>,
-    averageError: f64,
+    gps_points: Vec<SerializablePointBearing>,
+    original_points: Vec<GPXPoint>,
+    average_error: f64,
     name: String,
-    fileSizeBytes: u64,
+    file_size_bytes: u64,
 }
 
 impl SerializablePointBearing {
@@ -98,7 +101,7 @@ impl SerializablePointBearing {
 }
 
 impl GPXPoint {
-    fn to_geo_point(&self) -> Point<f64> {
+    fn to_geo_point(self) -> Point<f64> {
         Point::new(self.lng, self.lat)
     }
 }
@@ -108,7 +111,9 @@ impl GPXPoint {
 async fn get_images<P: AsRef<Path>>(point_bearings: &[SerializablePointBearing], out_dir: &P) {
     let url = |point_bearing: &SerializablePointBearing| {
         format!(
-"https://maps.googleapis.com/maps/api/streetview?size=640x480&location={},{}&fov=100&source=outdoor&heading={}&pitch=0&key={}", point_bearing.lat, point_bearing.lng, point_bearing.bearing, CLI_OPTIONS.api_key)
+            "https://maps.googleapis.com/maps/api/streetview?size=640x480&location={},{}&fov=100&source=outdoor&heading={}&pitch=0&key={}",
+            point_bearing.lat, point_bearing.lng, point_bearing.bearing, CLI_OPTIONS.api_key
+        )
     };
     let total_requests = point_bearings.len();
     let mut requests_completed = 0;
@@ -135,7 +140,7 @@ async fn get_images<P: AsRef<Path>>(point_bearings: &[SerializablePointBearing],
             (index, bytes)
         })
         .for_each(|(index, bytes)| async move {
-            let filename = out_dir.as_ref().join(format!("{}.jpg", &index));
+            let filename = out_dir.as_ref().join(format!("{}.jpg", index));
             tokio::fs::write(filename, bytes.unwrap()).await.unwrap();
         })
         .await;
@@ -152,7 +157,9 @@ async fn get_metadata(point_bearings: &[PointBearing]) -> Vec<GSVMetadata> {
     // and to skip images that are a copy of the previous one
     let url = |point_bearing: &PointBearing| {
         format!(
-"https://maps.googleapis.com/maps/api/streetview/metadata?location={},{}&source=outdoor&key={}", point_bearing.point.lat, point_bearing.point.lng, CLI_OPTIONS.api_key)
+            "https://maps.googleapis.com/maps/api/streetview/metadata?location={},{}&source=outdoor&key={}",
+            point_bearing.point.lat, point_bearing.point.lng, CLI_OPTIONS.api_key
+        )
     };
     let client = Client::new();
     let total_request_count = point_bearings.len();
@@ -206,26 +213,25 @@ fn group_by_location(
 ) -> (Vec<PointBearing>, Vec<f64>) {
     let mut grouped_points = vec![vec![]];
     let mut last_pano = None;
-    for (point_bearing, meta) in
-        point_bearings
-            .into_iter()
-            .zip(metadata.into_iter())
-            .filter(|(_, metadata)| {
-                let is_ok = metadata.status == "OK";
-                if !is_ok {
-                    eprintln!("Metadata not ok! {:?}", &metadata);
-                }
-                is_ok
-            })
-    {
-        if let Some(last_pano) = last_pano {
-            if last_pano != meta.pano_id {
-                grouped_points.push(vec![]);
+    for (point_bearing, meta) in point_bearings
+        .into_iter()
+        .zip(metadata)
+        .filter(|(_, metadata)| {
+            let is_ok = metadata.status == "OK";
+            if !is_ok {
+                eprintln!("Metadata not ok! {:?}", metadata);
             }
+            is_ok
+        })
+    {
+        if let Some(last_pano) = last_pano
+            && last_pano != meta.pano_id
+        {
+            grouped_points.push(vec![]);
         }
         let actual_point = point_bearing.point.to_geo_point();
         let pano_point = Point::new(meta.location.lng, meta.location.lat);
-        let err = actual_point.geodesic_distance(&pano_point);
+        let err = Geodesic.distance(actual_point, pano_point);
         let groups = grouped_points.len();
 
         last_pano = Some(meta.pano_id.clone());
@@ -241,7 +247,10 @@ fn group_by_location(
         })
         .collect::<Vec<_>>();
     let errs = best_groups.iter().map(|(_, _, e)| *e).collect::<Vec<_>>();
-    let point_bearings = best_groups.into_iter().map(|(p, _, _)| p).collect::<Vec<_>>();
+    let point_bearings = best_groups
+        .into_iter()
+        .map(|(p, _, _)| p)
+        .collect::<Vec<_>>();
     (point_bearings, errs)
 }
 
@@ -257,17 +266,17 @@ fn interp_points(points: Vec<GPXPoint>, factor: usize) -> Vec<GPXPoint> {
             .flat_map(move |(p1, p2)| {
                 let p1geo = p1.to_geo_point();
                 let p2geo = p2.to_geo_point();
-                p1geo
-                    .haversine_intermediate_fill(
-                        &p2geo,
-                        p1geo.haversine_distance(&p2geo) / (factor as f64),
+                Haversine
+                    .points_along_line(
+                        p1geo,
+                        p2geo,
+                        Haversine.distance(p1geo, p2geo) / (factor as f64),
                         /* include ends */ false,
                     )
-                    .into_iter()
                     .enumerate()
                     .map(move |(i, p)| GPXPoint {
-                        lat: p.lat(),
-                        lng: p.lng(),
+                        lat: p.y(),
+                        lng: p.x(),
                         // Also interp the elevation if given at both endpoints
                         ele: p1.ele.and_then(|e1| {
                             p2.ele.map(|e2| e1 + (e2 - e1) * (i as f64 / factor as f64))
@@ -310,13 +319,13 @@ fn sample_points_by_distance(points: &[GPXPoint], n: usize, distances: &[f64]) -
 fn get_bearing(point1: &GPXPoint, point2: &GPXPoint) -> f64 {
     let p1 = point1.to_geo_point();
     let p2 = point2.to_geo_point();
-    p1.bearing(p2)
+    Haversine.bearing(p1, p2)
 }
 
 fn get_distance(point1: &GPXPoint, point2: &GPXPoint) -> f64 {
     let p1 = point1.to_geo_point();
     let p2 = point2.to_geo_point();
-    p1.geodesic_distance(&p2)
+    Geodesic.distance(p1, p2)
 }
 
 fn find_bearings(points: &[GPXPoint]) -> Vec<PointBearing> {
@@ -345,33 +354,32 @@ fn read_gpx<R: std::io::Read>(reader: R) -> ReadResult {
         .into_iter()
         .flat_map(|t| t.segments.into_iter().map(|s| s.points.into_iter()))
         .flatten()
-        .into_iter()
         .map(|p| GPXPoint {
-            lat: p.point().lat(),
-            lng: p.point().lng(),
+            lat: p.point().y(),
+            lng: p.point().x(),
             ele: p.elevation,
         })
         .collect::<Vec<_>>();
     // Estimate each point is about 32 bytes
     let size = (points.len() * 32) as u64;
     ReadResult {
-        points: points,
+        points,
         name: gpx.metadata.and_then(|m| m.name),
-        size: size,
+        size,
     }
 }
 
 async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) {
     // Remove first offset frames from gps points
     metadata_result
-        .gpsPoints
+        .gps_points
         .drain(0..CLI_OPTIONS.offset_frames.unwrap_or(0));
     // Remove all frames after max frames from gps points
     metadata_result
-        .gpsPoints
+        .gps_points
         .truncate(CLI_OPTIONS.max_frames.unwrap_or(metadata_result.frames));
     progress_stage("Fetching images from Streetview");
-    get_images(&metadata_result.gpsPoints, &output_dir).await;
+    get_images(&metadata_result.gps_points, &output_dir).await;
     let dir_size = get_size(&output_dir).unwrap_or(0);
     let dir_files = get_dir_content(&output_dir)
         .map(|d| d.files.len())
@@ -385,13 +393,13 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
     let n_points = if CLI_OPTIONS.optimizer.is_some() {
         progress_stage("Optimizing image sequence (removing inconsistencies)");
         let kept_points = optim::optimize_sequence(&output_dir).await;
-        metadata_result.gpsPoints = kept_points
+        metadata_result.gps_points = kept_points
             .iter()
-            .map(|&i| metadata_result.gpsPoints[i])
+            .map(|&i| metadata_result.gps_points[i])
             .collect::<Vec<_>>();
         kept_points.len()
     } else {
-        metadata_result.gpsPoints.len()
+        metadata_result.gps_points.len()
     };
 
     if CLI_OPTIONS.print_metadata {
@@ -401,13 +409,13 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
                 serde_json::to_string(&metadata_result).expect("Serialization failed")
             );
         } else {
-            println!("{:?}", &metadata_result);
+            println!("{:?}", metadata_result);
         }
     }
 
     let original_timelapse_name = format!(
         "{}-original.mp4",
-        &CLI_OPTIONS
+        CLI_OPTIONS
             .output
             .clone()
             .unwrap_or("streetwarp-lapse".to_string())
@@ -436,7 +444,7 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
                 &output_dir,
                 n_points,
                 &original_timelapse_name,
-                &output_timelapse_name,
+                output_timelapse_name,
             )
             .await
         }
@@ -446,7 +454,7 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
                 &output_dir,
                 n_points,
                 &original_timelapse_name,
-                &output_timelapse_name,
+                output_timelapse_name,
             )
             .await
         }
@@ -460,7 +468,7 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
 
 #[tokio::main]
 async fn main() {
-    lazy_static::initialize(&CLI_OPTIONS);
+    LazyLock::force(&CLI_OPTIONS);
 
     let file = File::open(&CLI_OPTIONS.input_path).unwrap();
     let reader = BufReader::new(file);
@@ -468,7 +476,7 @@ async fn main() {
     let output_dir = CLI_OPTIONS
         .output_dir
         .as_ref()
-        .map(|o| PathBuf::from(o))
+        .map(PathBuf::from)
         .unwrap_or_else(|| {
             let start = SystemTime::now();
             let now = start
@@ -513,7 +521,7 @@ async fn main() {
         all_points,
         CLI_OPTIONS
             .interp
-            .unwrap_or(expected_frames / &distances.len() + 1),
+            .unwrap_or(expected_frames / distances.len() + 1),
     );
     let distances = find_distances(&all_points);
 
@@ -547,14 +555,14 @@ async fn main() {
     let metadata_result = MetadataResult {
         distance: distances.iter().sum::<f64>(),
         frames: points.len(),
-        averageError: errs.iter().sum::<f64>() / errs.len() as f64,
-        gpsPoints: points
+        average_error: errs.iter().sum::<f64>() / errs.len() as f64,
+        gps_points: points
             .iter()
-            .map(|pb| SerializablePointBearing::from_geo(pb))
+            .map(SerializablePointBearing::from_geo)
             .collect::<Vec<_>>(),
-        originalPoints: original_points,
+        original_points,
         name: read_result.name.unwrap_or("Unnamed GPX File".to_owned()),
-        fileSizeBytes: read_result.size,
+        file_size_bytes: read_result.size,
     };
     if CLI_OPTIONS.dry_run {
         if CLI_OPTIONS.json {
@@ -563,7 +571,7 @@ async fn main() {
                 serde_json::to_string(&metadata_result).expect("Serialization failed")
             );
         } else {
-            println!("{:?}", &metadata_result);
+            println!("{:?}", metadata_result);
         }
         return;
     }
