@@ -2133,17 +2133,23 @@ fn a_route_flickering_in_and_out_of_the_window_still_fits_the_url_limit() {
     // so the route shatters into thousands of three-point runs. Nothing about
     // thinning points can help here, and it is the case that decides whether the
     // budget floor is genuinely a floor.
+    // Three points off screen between each visible one, not one. Clipping keeps
+    // an off-screen point whose neighbour is visible, so a single excursion
+    // point never breaks a run: only the middle of three has both neighbours off
+    // screen and gets dropped. One-in-one-out would produce a single long run
+    // and quietly test nothing.
     let mut route = Vec::new();
-    for i in 0..2000 {
+    for i in 0..1500 {
         route.push(minimap::LatLng {
             lat: 51.5,
             lng: -0.12 + (i as f64) * 0.0000001,
         });
-        // Far enough north to leave any zoom-16 window.
-        route.push(minimap::LatLng {
-            lat: 51.6,
-            lng: -0.12,
-        });
+        for _ in 0..3 {
+            route.push(minimap::LatLng {
+                lat: 51.6,
+                lng: -0.12,
+            });
+        }
     }
     let plan = minimap::MinimapPlan::resolve(
         options::MinimapMode::Follow,
@@ -2155,6 +2161,23 @@ fn a_route_flickering_in_and_out_of_the_window_still_fits_the_url_limit() {
         480,
     )
     .unwrap();
+
+    // Confirm the route really did shatter, so a future change to clipping
+    // cannot turn this back into a single-run test that passes for free.
+    let runs = minimap::clip_to_view(
+        &route,
+        minimap::LatLng {
+            lat: 51.5,
+            lng: -0.12,
+        },
+        16,
+        plan.size_px,
+    );
+    assert!(
+        runs.len() > 100,
+        "this test only means something if the route shatters, got {} run(s)",
+        runs.len()
+    );
 
     let url = minimap::probe_url(&plan, &route, &route, "test-key").unwrap();
     assert!(
