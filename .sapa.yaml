@@ -1,0 +1,54 @@
+# Sapa configuration. Every option below is commented out, so this file runs on
+# sapa's built-in defaults as-is. Uncomment a line and change it to override.
+
+# The branch new streams rebase onto and target with their PR. Default: main.
+base: master
+
+# Whether `sapa submit` opens the PR ready for review or as a draft.
+# One of `ready` or `draft`. Default: draft.
+pr: ready
+
+# Issue backend. `github` (default) reads issues and records the plan on GitHub.
+# `jira` uses the Atlassian CLI (acli) and keeps PRs on GitHub.
+tracker: github
+# jira:
+#   site: your-org.atlassian.net   # only used to build the PR's issue link
+#   project: GP                    # lets `sapa start 1` mean GP-1
+
+# A skill to run the planning discussion in `sapa plan` (e.g. grilling).
+# Omit to discuss the plan inline.
+plan: grilling
+
+# A skill to shape the implementation in `sapa build` (e.g. tdd), invoked once
+# before the first task. It shapes how each task reaches green; sapa still owns
+# the task list and its `Done when:` checks. Omit to build as sapa describes.
+build: tdd
+
+# A skill to style the free prose sapa writes (plan comment, PR body, review
+# replies), run as a final pass before recording. Omit to write plainly.
+writing_style: humanizer
+
+# How `sapa watch` keeps a branch mergeable.
+# watch:
+#   # How it decides a branch is behind its base.
+#   #   protection (default): only on mergeStateStatus BEHIND, which needs a
+#   #     "require branches up to date" protection rule.
+#   #   any: also when the base has moved ahead without that rule.
+#   base_behind: protection
+#   # How many failed CI fixes `sapa watch` will push before it stops and
+#   # escalates. Resets to 0 whenever CI goes green again. Default: 3.
+#   max_ci_fix_attempts: 3
+
+# The quality gate `sapa gate` runs. `steps:` is a list run in order; a step
+# either invokes a skill or runs a shell command. Replace this example with your
+# project's own checks.
+gate:
+#   # How many fixes `/sapa-gate` applies and re-runs for one failing gate before
+#   # it stops and hands the stream back. 0 never autofixes. Default: 3.
+#   max_fix_attempts: 3
+  steps:
+    - name: test
+      run: cargo test
+    - name: review
+      skill: code-review
+      model: fable
