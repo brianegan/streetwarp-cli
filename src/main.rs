@@ -286,20 +286,46 @@ async fn fetch_render_inputs<F: Fetch, P: AsRef<Path>>(
     plan: Option<&minimap::MinimapPlan>,
     metadata_result: &MetadataResult,
     out_dir: &P,
-) -> Result<Vec<Vec<u8>>, String> {
-    let maps = match plan {
-        None => Vec::new(),
-        Some(plan) => {
-            progress_stage("Fetching minimap from Google Maps");
-            let (track, panorama) = route_lines(metadata_result);
-            let urls = minimap::minimap_urls(plan, &track, &panorama, fetching.api_key);
-            fetching.minimaps(&urls).await?
+) -> Result<(), String> {
+    if let Some(plan) = plan {
+        // One map, purely to prove the key can fetch one, and thrown away. The
+        // maps the render actually uses are fetched later by `draw_minimaps`,
+        // because stages between here and there rewrite the frame list. The
+        // cache makes this free when that later fetch asks for the same image.
+        progress_stage("Checking the minimap can be fetched");
+        let (track, panorama) = route_lines(metadata_result);
+        let urls = minimap::minimap_urls(plan, &track, &panorama, fetching.api_key);
+        if let Some(probe) = urls.first() {
+            fetching.minimaps(std::slice::from_ref(probe)).await?;
         }
-    };
+    }
 
     progress_stage("Fetching images from Streetview");
     fetching.images(&metadata_result.gps_points, out_dir).await;
-    Ok(maps)
+    Ok(())
+}
+
+/// Fetch the minimaps a render needs and draw them, against one snapshot of the
+/// frame list.
+///
+/// Fetching and drawing live in the same function on purpose. When they were
+/// separate, the optimizer stage sat between them and rewrote the frames, so
+/// follow mode drew a map per *pre-optimizer* point onto a video with fewer
+/// frames, and overview mode projected dots with a framing that no longer
+/// matched the map that had been fetched.
+async fn draw_minimaps<F: Fetch, P: AsRef<Path>>(
+    fetching: &Fetching<'_, F>,
+    plan: &minimap::MinimapPlan,
+    metadata_result: &MetadataResult,
+    out_dir: &P,
+) -> Result<usize, String> {
+    progress_stage("Fetching minimap from Google Maps");
+    let (track, panorama) = route_lines(metadata_result);
+    let urls = minimap::minimap_urls(plan, &track, &panorama, fetching.api_key);
+    let maps = fetching.minimaps(&urls).await?;
+
+    progress_stage("Drawing the minimap");
+    minimap::render_frames(plan, &maps, &track, &panorama, out_dir)
 }
 
 /// Given list of point_bearings and their metadata (expect arrays of same length),
@@ -490,7 +516,7 @@ async fn create_video<F: Fetch>(
         VIDEO_WIDTH,
         VIDEO_HEIGHT,
     );
-    let maps = fetch_render_inputs(fetching, plan.as_ref(), &metadata_result, &output_dir)
+    fetch_render_inputs(fetching, plan.as_ref(), &metadata_result, &output_dir)
         .await
         .unwrap_or_else(|message| panic!("{message}"));
     let dir_size = get_size(&output_dir).unwrap_or(0);
@@ -534,18 +560,27 @@ async fn create_video<F: Fetch>(
             .unwrap_or("streetwarp-lapse".to_string())
     );
 
-    let overlay = plan.as_ref().map(|plan| {
-        progress_stage("Drawing the minimap");
-        let (track, panorama) = route_lines(&metadata_result);
-        minimap::render_frames(plan, &maps, &track, &panorama, &output_dir)
-            .unwrap_or_else(|message| panic!("{message}"));
-        let (x, y) = minimap::overlay_offsets(plan, VIDEO_WIDTH, VIDEO_HEIGHT);
-        Overlay {
-            x,
-            y,
-            size_px: plan.size_px,
+    // Drawn here rather than beside the image fetch, because the optimizer above
+    // rewrites the frame list and the minimaps have to match what the video will
+    // actually show.
+    let overlay = match plan.as_ref() {
+        None => None,
+        Some(plan) => {
+            let drawn = draw_minimaps(fetching, plan, &metadata_result, &output_dir)
+                .await
+                .unwrap_or_else(|message| panic!("{message}"));
+            assert_eq!(
+                drawn, n_points,
+                "drew {drawn} minimaps for a {n_points} frame video"
+            );
+            let (x, y) = minimap::overlay_offsets(plan, VIDEO_WIDTH, VIDEO_HEIGHT);
+            Some(Overlay {
+                x,
+                y,
+                size_px: plan.size_px,
+            })
         }
-    });
+    };
 
     progress_stage(&format!("Joining {} images into video sequence", n_points));
     create_timelapse(&output_dir, n_points, &original_timelapse_name).await;

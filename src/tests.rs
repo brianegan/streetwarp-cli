@@ -1233,11 +1233,10 @@ async fn a_working_minimap_lets_the_street_view_frames_be_fetched() {
     std::fs::create_dir_all(&out_dir).unwrap();
     let result = small_metadata_result();
 
-    let maps = fetch_render_inputs(&fetching, Some(&overview_plan()), &result, &out_dir)
+    fetch_render_inputs(&fetching, Some(&overview_plan()), &result, &out_dir)
         .await
         .expect("a working minimap should not fail the render");
 
-    assert_eq!(maps.len(), 1, "overview mode fetches one map");
     let calls = fetcher.calls();
     let first_streetview = calls.iter().position(|u| u.contains("/streetview"));
     let first_map = calls.iter().position(|u| u.contains("staticmap"));
@@ -1614,11 +1613,10 @@ async fn the_default_render_never_touches_the_maps_api() {
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    let maps = fetch_render_inputs(&fetching, None, &small_metadata_result(), &out_dir)
+    fetch_render_inputs(&fetching, None, &small_metadata_result(), &out_dir)
         .await
         .unwrap();
 
-    assert!(maps.is_empty());
     assert!(
         !fetcher.calls().iter().any(|u| u.contains("staticmap")),
         "an opt-in feature must cost nothing when it was not opted into: {:?}",
@@ -1818,4 +1816,116 @@ fn the_map_url_requests_the_scale_the_projection_assumes() {
         url.contains(&format!("scale={}", minimap::MAP_SCALE)),
         "{url}"
     );
+}
+
+// The optimizer stage rewrites the frame list partway through a render. These
+// pin the two ways that used to corrupt the minimap silently.
+
+#[test]
+fn follow_mode_refuses_maps_that_were_fetched_for_a_different_set_of_frames() {
+    let dir = std::env::temp_dir().join("streetwarp-follow-desync");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+    // Ten maps fetched, but the optimizer left only six frames behind.
+    let maps = (0..10)
+        .map(|_| fake_map_png(plan.size_px * minimap::MAP_SCALE))
+        .collect::<Vec<_>>();
+    let remaining = long_route(6);
+
+    let outcome = minimap::render_frames(&plan, &maps, &remaining, &remaining, &dir);
+
+    let message = outcome.expect_err("a map-to-frame mismatch must not render silently");
+    assert!(message.contains("10"), "{message}");
+    assert!(message.contains('6'), "{message}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn minimaps_are_fetched_and_drawn_from_the_same_frame_list() {
+    // `draw_minimaps` owns both halves so nothing can rewrite the frames in
+    // between. Whatever the frame list says, that is what gets fetched and that
+    // is what gets drawn.
+    let dir = std::env::temp_dir().join("streetwarp-draw-together");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+    let fetcher = RecordingFetcher::returning(&fake_map_png(plan.size_px * minimap::MAP_SCALE));
+    let cache = cache::Cache::disabled();
+    let fetching = Fetching {
+        fetcher: &fetcher,
+        cache: &cache,
+        api_key: "test-key",
+        concurrency: 4,
+    };
+    let result = small_metadata_result();
+
+    let drawn = draw_minimaps(&fetching, &plan, &result, &dir)
+        .await
+        .expect("drawing minimaps should succeed");
+
+    assert_eq!(drawn, result.gps_points.len(), "one minimap per video frame");
+    assert_eq!(
+        fetcher.calls().len(),
+        result.gps_points.len(),
+        "follow mode fetches one map per frame it draws"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_probe_costs_one_map_not_one_per_frame() {
+    // The pre-flight check exists to fail cheaply, so it must not fetch the
+    // whole follow-mode sequence before a single frame has been rendered.
+    let fetcher = RecordingFetcher::returning(b"bytes");
+    let cache = cache::Cache::disabled();
+    let fetching = Fetching {
+        fetcher: &fetcher,
+        cache: &cache,
+        api_key: "test-key",
+        concurrency: 4,
+    };
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+    let out_dir = std::env::temp_dir().join("streetwarp-probe-cost");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    fetch_render_inputs(&fetching, Some(&plan), &small_metadata_result(), &out_dir)
+        .await
+        .unwrap();
+
+    let maps = fetcher
+        .calls()
+        .iter()
+        .filter(|u| u.contains("staticmap"))
+        .count();
+    assert_eq!(maps, 1, "the probe should cost exactly one map request");
+    let _ = std::fs::remove_dir_all(&out_dir);
 }

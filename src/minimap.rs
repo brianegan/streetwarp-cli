@@ -520,6 +520,19 @@ pub fn render_frames<P: AsRef<std::path::Path>>(
             Ok(panorama.len())
         }
         Mode::Follow => {
+            // Follow mode fetches a map centred on each frame, so the two lists
+            // are the same list. If they have drifted apart, some stage rewrote
+            // the frames between the fetch and here, and every map after the
+            // first change is centred on the wrong place. Say so rather than
+            // rendering a video that silently points somewhere else.
+            if maps.len() != panorama.len() {
+                return Err(format!(
+                    "Have {} minimaps for {} video frames; they were fetched for a different \
+                     set of frames than the video is being drawn from",
+                    maps.len(),
+                    panorama.len()
+                ));
+            }
             for (index, bytes) in maps.iter().enumerate() {
                 let map = decode_map(bytes)?;
                 // Follow mode centres each map on the rider, so the dot is
