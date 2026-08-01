@@ -2126,3 +2126,40 @@ fn a_route_lapping_the_window_two_hundred_times_still_fits_the_url_limit() {
         url.len()
     );
 }
+
+#[test]
+fn a_route_flickering_in_and_out_of_the_window_still_fits_the_url_limit() {
+    // The pathological shape for run splitting: every other point is off screen,
+    // so the route shatters into thousands of three-point runs. Nothing about
+    // thinning points can help here, and it is the case that decides whether the
+    // budget floor is genuinely a floor.
+    let mut route = Vec::new();
+    for i in 0..2000 {
+        route.push(minimap::LatLng {
+            lat: 51.5,
+            lng: -0.12 + (i as f64) * 0.0000001,
+        });
+        // Far enough north to leave any zoom-16 window.
+        route.push(minimap::LatLng {
+            lat: 51.6,
+            lng: -0.12,
+        });
+    }
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+
+    let url = minimap::probe_url(&plan, &route, &route, "test-key").unwrap();
+    assert!(
+        url.len() <= minimap::MAX_URL_LEN,
+        "a flickering follow url was {} characters",
+        url.len()
+    );
+}
