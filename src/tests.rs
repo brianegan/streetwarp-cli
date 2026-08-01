@@ -1609,3 +1609,163 @@ async fn the_default_render_never_touches_the_maps_api() {
     );
     let _ = std::fs::remove_dir_all(&out_dir);
 }
+
+// The overview map is framed to contain the whole route, so where each point
+// lands in the returned image follows from that alone. These assertions come
+// from what the framing promises, not from how it is computed, which is what
+// lets them disagree with the projection.
+
+#[test]
+fn every_point_of_an_overview_route_lands_inside_the_fetched_map() {
+    let plan = overview_plan();
+    let route = long_route(400);
+    let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+    let image = (plan.size_px * minimap::MAP_SCALE) as f64;
+
+    for point in &route {
+        let (x, y) = minimap::image_pixel(*point, centre, zoom, plan.size_px);
+        assert!(
+            (0.0..=image).contains(&x) && (0.0..=image).contains(&y),
+            "a map framed to contain the route put {point:?} at ({x:.1}, {y:.1}), \
+             outside the {image:.0}px image"
+        );
+    }
+}
+
+#[test]
+fn the_middle_of_an_overview_route_lands_in_the_middle_of_the_map() {
+    let plan = overview_plan();
+    let route = long_route(400);
+    let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+    let middle = (plan.size_px * minimap::MAP_SCALE) as f64 / 2.0;
+
+    let (x, y) = minimap::image_pixel(centre, centre, zoom, plan.size_px);
+    close(x, middle, 1e-6);
+    close(y, middle, 1e-6);
+}
+
+#[test]
+fn an_overview_route_fills_most_of_the_map_it_was_framed_into() {
+    // `fit_zoom` takes the deepest zoom that still fits, so one level deeper
+    // would overflow and the route has to span more than half the image. A route
+    // drawn as a speck in the middle means the zoom came out too shallow.
+    let plan = overview_plan();
+    let route = long_route(400);
+    let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+    let image = (plan.size_px * minimap::MAP_SCALE) as f64;
+
+    let xs = route
+        .iter()
+        .map(|p| minimap::image_pixel(*p, centre, zoom, plan.size_px).0);
+    let (min, max) = xs.fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+
+    assert!(
+        max - min > image * 0.45,
+        "the route spans only {:.1} of {image:.0} pixels",
+        max - min
+    );
+}
+
+// Google's `scale=2` returns twice the pixels for the *same* coverage area: a
+// `size=S&scale=2` image shows exactly what `size=S` shows, at double the pixel
+// density. So the edge of the coverage the URL asked for has to land on the edge
+// of the image that comes back. The longitude offset below is worked from the
+// Web Mercator definition, 360 degrees to 256 world pixels at zoom 0, so it
+// disagrees with the projection rather than restating it.
+//
+// This test earns its keep. Confusing pixel density with coverage was a real bug
+// here, and it is the only test in this file that catches it: every other one
+// compares the projection against the framing, and those two were wrong together
+// in the same direction, so all of them passed. Do not delete it as redundant.
+#[test]
+fn the_edge_of_the_requested_coverage_is_the_edge_of_the_returned_image() {
+    let plan = overview_plan();
+    let route = long_route(400);
+    let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+
+    // Half the requested size east of centre is the right-hand edge of coverage.
+    let world_pixels = (plan.size_px as f64 / 2.0) / (1u64 << zoom) as f64;
+    let east_edge = minimap::LatLng {
+        lat: centre.lat,
+        lng: centre.lng + world_pixels * 360.0 / 256.0,
+    };
+
+    let (x, _) = minimap::image_pixel(east_edge, centre, zoom, plan.size_px);
+    close(x, (plan.size_px * minimap::MAP_SCALE) as f64, 1e-6);
+}
+
+#[test]
+fn the_overview_url_asks_for_the_coverage_the_framing_was_fitted_to() {
+    let plan = overview_plan();
+    let route = long_route(400);
+    let (_, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+    let url = &minimap::minimap_urls(&plan, &route, &route, "test-key")[0];
+
+    assert!(
+        url.contains(&format!("size={}x{}", plan.size_px, plan.size_px)),
+        "{url}"
+    );
+    assert!(url.contains("scale=2"), "{url}");
+    assert!(url.contains(&format!("zoom={zoom}")), "{url}");
+}
+
+/// Read back a rendered minimap frame.
+fn read_frame(dir: &std::path::Path, index: usize) -> image::RgbaImage {
+    image::open(dir.join(minimap::frame_filename(index)))
+        .expect("missing minimap frame")
+        .to_rgba8()
+}
+
+#[test]
+fn a_rendered_overview_frame_puts_its_dot_at_the_projected_coordinate() {
+    // The earlier dot tests stamp a hardcoded pixel, which says nothing about
+    // whether `render_frames` projects the frame's coordinate to get there. This
+    // one goes the whole way: a real route, a real frame index, and the pixel
+    // the framing says that frame sits at.
+    let dir = std::env::temp_dir().join("streetwarp-projected-dot");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let plan = overview_plan();
+    let route = long_route(300);
+    let base_grey = image::Rgba([200u8, 200, 200, 255]);
+    let maps = vec![fake_map_png(plan.size_px * minimap::MAP_SCALE)];
+    minimap::render_frames(&plan, &maps, &route, &route, &dir).unwrap();
+
+    let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+    // Check a frame partway along, where a half-scale error would be obvious.
+    for index in [0usize, 150, 299] {
+        let (x, y) = minimap::image_pixel(route[index], centre, zoom, plan.size_px);
+        let frame = read_frame(&dir, index);
+        let (width, height) = frame.dimensions();
+        let at = |x: f64, y: f64| {
+            *frame.get_pixel(
+                (x.round() as u32).min(width - 1),
+                (y.round() as u32).min(height - 1),
+            )
+        };
+
+        assert_ne!(
+            at(x, y),
+            base_grey,
+            "frame {index}: nothing was drawn at the projected pixel ({x:.1}, {y:.1})"
+        );
+        // A point well away from this frame's position is still bare map, so
+        // the dot really is a dot at that coordinate.
+        let far = if x > width as f64 / 2.0 { 4.0 } else { width as f64 - 4.0 };
+        assert_eq!(
+            at(far, y),
+            base_grey,
+            "frame {index}: the dot bled across to ({far:.0}, {y:.1})"
+        );
+    }
+
+    // A corner well clear of a route running diagonally must still be bare map.
+    let frame = read_frame(&dir, 150);
+    assert_eq!(
+        *frame.get_pixel(frame.width() - 2, 1),
+        base_grey,
+        "the dot should be a dot, not a wash over the whole map"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

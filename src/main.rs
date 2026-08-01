@@ -257,6 +257,25 @@ impl<F: Fetch> Fetching<'_, F> {
     }
 }
 
+/// The two lines the minimap draws: the GPX track as it was recorded, and where
+/// the rendered frames actually ended up after Google snapped each sample to its
+/// nearest panorama.
+fn route_lines(result: &MetadataResult) -> (Vec<minimap::LatLng>, Vec<minimap::LatLng>) {
+    let as_latlng = |lat: f64, lng: f64| minimap::LatLng { lat, lng };
+    (
+        result
+            .original_points
+            .iter()
+            .map(|p| as_latlng(p.lat, p.lng))
+            .collect(),
+        result
+            .gps_points
+            .iter()
+            .map(|p| as_latlng(p.lat, p.lng))
+            .collect(),
+    )
+}
+
 /// Fetch everything a render pulls from Google, minimaps first.
 ///
 /// The order is the point. A minimap failure has to happen before the Street
@@ -272,22 +291,7 @@ async fn fetch_render_inputs<F: Fetch, P: AsRef<Path>>(
         None => Vec::new(),
         Some(plan) => {
             progress_stage("Fetching minimap from Google Maps");
-            let track = metadata_result
-                .original_points
-                .iter()
-                .map(|p| minimap::LatLng {
-                    lat: p.lat,
-                    lng: p.lng,
-                })
-                .collect::<Vec<_>>();
-            let panorama = metadata_result
-                .gps_points
-                .iter()
-                .map(|p| minimap::LatLng {
-                    lat: p.lat,
-                    lng: p.lng,
-                })
-                .collect::<Vec<_>>();
+            let (track, panorama) = route_lines(metadata_result);
             let urls = minimap::minimap_urls(plan, &track, &panorama, fetching.api_key);
             fetching.minimaps(&urls).await?
         }
@@ -532,22 +536,7 @@ async fn create_video<F: Fetch>(
 
     let overlay = plan.as_ref().map(|plan| {
         progress_stage("Drawing the minimap");
-        let track = metadata_result
-            .original_points
-            .iter()
-            .map(|p| minimap::LatLng {
-                lat: p.lat,
-                lng: p.lng,
-            })
-            .collect::<Vec<_>>();
-        let panorama = metadata_result
-            .gps_points
-            .iter()
-            .map(|p| minimap::LatLng {
-                lat: p.lat,
-                lng: p.lng,
-            })
-            .collect::<Vec<_>>();
+        let (track, panorama) = route_lines(&metadata_result);
         minimap::render_frames(plan, &maps, &track, &panorama, &output_dir)
             .unwrap_or_else(|message| panic!("{message}"));
         let (x, y) = minimap::overlay_offsets(plan, VIDEO_WIDTH, VIDEO_HEIGHT);

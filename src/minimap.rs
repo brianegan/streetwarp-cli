@@ -283,15 +283,25 @@ pub fn map_failure_message(error: &crate::fetch::FetchError) -> String {
              does not carry it.",
         );
     }
-    // Never echo `error.url`: it carries the API key.
+    // The request URL is deliberately never quoted here: it carries the API key.
     message.push_str(&format!("\nEnable the Maps Static API at {MAPS_STATIC_ENABLE_URL}"));
     message
+}
+
+/// The modes a plan can actually be in.
+///
+/// `MinimapMode::Off` produces no plan at all, so it has no representation here
+/// and the arms that could never run do not have to be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Overview,
+    Follow,
 }
 
 /// The resolved minimap settings for one render.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MinimapPlan {
-    pub mode: crate::options::MinimapMode,
+    pub mode: Mode,
     pub position: crate::options::MinimapPosition,
     /// Side length of the minimap in video pixels.
     pub size_px: u32,
@@ -312,9 +322,11 @@ impl MinimapPlan {
         video_width: u32,
         video_height: u32,
     ) -> Option<MinimapPlan> {
-        if mode == crate::options::MinimapMode::Off {
-            return None;
-        }
+        let mode = match mode {
+            crate::options::MinimapMode::Off => return None,
+            crate::options::MinimapMode::Overview => Mode::Overview,
+            crate::options::MinimapMode::Follow => Mode::Follow,
+        };
         // Sizing against the shorter side keeps the minimap square and stops it
         // eating the frame when the video is wide.
         let shorter = video_width.min(video_height);
@@ -370,6 +382,37 @@ pub fn decode_map(bytes: &[u8]) -> Result<image::RgbaImage, String> {
         .map_err(|e| format!("Could not decode the minimap Google returned: {e}"))
 }
 
+/// Google's `scale=2` returns twice as many pixels for the *same* coverage, so
+/// one logical map pixel is two pixels in the image that comes back. Framing and
+/// projection work in logical pixels; only the final stamp is in image pixels.
+pub const MAP_SCALE: u32 = 2;
+
+/// The centre and zoom the overview map is framed at, or `None` for an empty
+/// route.
+///
+/// The request that asks Google for the map and the projection that stamps the
+/// dot onto it both read the framing from here. When each worked it out for
+/// itself they could disagree, and the dot would sit off the route.
+pub fn overview_framing(
+    plan: &MinimapPlan,
+    track: &[LatLng],
+    panorama: &[LatLng],
+) -> Option<(LatLng, u32)> {
+    let everything = track.iter().chain(panorama).copied().collect::<Vec<_>>();
+    let bounds = BBox::around(&everything)?;
+    // Fitted against the size the URL asks for, not the size of the image that
+    // comes back. `scale=2` doubles the pixels and leaves the coverage alone, so
+    // fitting against the doubled figure would choose a zoom one level too deep
+    // and run the route off the edges of the map.
+    Some((bounds.center(), fit_zoom(bounds, plan.size_px)))
+}
+
+/// Where a coordinate lands within the fetched map image, in image pixels.
+pub fn image_pixel(p: LatLng, center: LatLng, zoom: u32, logical_size_px: u32) -> (f64, f64) {
+    let (x, y) = project(p, center, zoom, logical_size_px);
+    (x * MAP_SCALE as f64, y * MAP_SCALE as f64)
+}
+
 /// The Static Maps requests a render needs: one shared image in overview mode,
 /// one per frame in follow mode.
 pub fn minimap_urls(
@@ -378,27 +421,21 @@ pub fn minimap_urls(
     panorama: &[LatLng],
     api_key: &str,
 ) -> Vec<String> {
-    // Google serves the image at twice the requested size with scale=2, and the
-    // overlay is downscaled into the frame, so the projection works in those
-    // doubled pixels.
-    let image_px = plan.size_px * 2;
     match plan.mode {
-        crate::options::MinimapMode::Off => Vec::new(),
-        crate::options::MinimapMode::Overview => {
-            let everything = track.iter().chain(panorama).copied().collect::<Vec<_>>();
-            let Some(bounds) = BBox::around(&everything) else {
+        Mode::Overview => {
+            let Some((center, zoom)) = overview_framing(plan, track, panorama) else {
                 return Vec::new();
             };
             vec![build_map_url(&MapRequest {
-                center: bounds.center(),
-                zoom: fit_zoom(bounds, image_px),
+                center,
+                zoom,
                 size_px: plan.size_px,
                 track,
                 panorama,
                 api_key,
             })]
         }
-        crate::options::MinimapMode::Follow => panorama
+        Mode::Follow => panorama
             .iter()
             .map(|here| {
                 build_map_url(&MapRequest {
@@ -408,8 +445,8 @@ pub fn minimap_urls(
                     // At follow zoom the whole route is mostly off screen, so
                     // send only what the window can show. Downsampling the full
                     // route instead would draw a coarse zigzag through it.
-                    track: &clip_to_view(track, *here, plan.zoom, image_px),
-                    panorama: &clip_to_view(panorama, *here, plan.zoom, image_px),
+                    track: &clip_to_view(track, *here, plan.zoom, plan.size_px),
+                    panorama: &clip_to_view(panorama, *here, plan.zoom, plan.size_px),
                     api_key,
                 })
             })
@@ -459,21 +496,17 @@ pub fn render_frames<P: AsRef<std::path::Path>>(
     };
 
     match plan.mode {
-        crate::options::MinimapMode::Off => Ok(0),
-        crate::options::MinimapMode::Overview => {
+        Mode::Overview => {
             let base = decode_map(maps.first().ok_or("No minimap was fetched")?)?;
-            let everything = track.iter().chain(panorama).copied().collect::<Vec<_>>();
-            let bounds = BBox::around(&everything).ok_or("The route has no points")?;
-            // The same framing `minimap_urls` asked Google for, so the dot lands
-            // where the map actually is.
-            let (center, zoom) = (bounds.center(), fit_zoom(bounds, base.width()));
+            let (center, zoom) =
+                overview_framing(plan, track, panorama).ok_or("The route has no points")?;
             for (index, here) in panorama.iter().enumerate() {
-                let (x, y) = project(*here, center, zoom, base.width());
+                let (x, y) = image_pixel(*here, center, zoom, plan.size_px);
                 write(&stamp_dot(&base, x, y), index)?;
             }
             Ok(panorama.len())
         }
-        crate::options::MinimapMode::Follow => {
+        Mode::Follow => {
             for (index, bytes) in maps.iter().enumerate() {
                 let map = decode_map(bytes)?;
                 // Follow mode centres each map on the rider, so the dot is
