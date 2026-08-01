@@ -21,11 +21,18 @@ pub enum Motion {
     Minterp,
 }
 
-/// Where the minimap goes and how big it is, in output video pixels.
+/// Where the composed minimap frame goes and how big it is, in output video
+/// pixels.
+///
+/// This is the whole composed frame, which is wider than the map itself: the dot
+/// sits at its true position and overhangs the map at the ends of a route, so
+/// the frame carries transparent padding around it. `x` and `y` can therefore be
+/// negative when the margin is smaller than that padding, which ffmpeg accepts
+/// and clips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Overlay {
-    pub x: u32,
-    pub y: u32,
+    pub x: i32,
+    pub y: i32,
     pub size_px: u32,
 }
 

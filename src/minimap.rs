@@ -442,21 +442,14 @@ pub fn dot_ring_radius(image_size_px: u32) -> f64 {
 ///
 /// Coordinates outside the image are drawn as far as they reach, so a dot on the
 /// very edge of the frame still shows a sliver rather than vanishing.
-pub fn stamp_dot(map: &image::RgbaImage, x: f64, y: f64) -> image::RgbaImage {
-    let mut stamped = map.clone();
+pub fn stamp_dot(canvas: &image::RgbaImage, x: f64, y: f64, ring: f64) -> image::RgbaImage {
+    let mut stamped = canvas.clone();
     let (width, height) = stamped.dimensions();
-    // Scale the dot with the map so it stays the same visual size whatever the
-    // minimap is sized to, but never shrink it below something you can see.
-    let ring = dot_ring_radius(width.min(height));
+    // `ring` is passed rather than derived from the canvas, because the canvas
+    // is padded and the dot must be sized against the map inside it. Deriving it
+    // here drew a dot fractionally wider than the padding it had to fit in.
     let radius = ring / 1.4;
 
-    // The map is fitted tight to the route, so the first and last positions land
-    // on the border and half the dot would fall outside. Nudge it just inside
-    // instead. That misplaces it by at most the dot's own radius, and only at
-    // the very ends of a route, which is a better trade than zooming out far
-    // enough to make room.
-    let x = x.clamp(ring, (width as f64 - 1.0 - ring).max(ring));
-    let y = y.clamp(ring, (height as f64 - 1.0 - ring).max(ring));
 
     let left = (x - ring).floor().max(0.0) as u32;
     let top = (y - ring).floor().max(0.0) as u32;
@@ -474,6 +467,33 @@ pub fn stamp_dot(map: &image::RgbaImage, x: f64, y: f64) -> image::RgbaImage {
         }
     }
     stamped
+}
+
+/// Transparent padding around the map in a composed frame, in map image pixels.
+///
+/// Wide enough for a dot centred on the map's very edge, which is where the
+/// first and last positions of a route sit.
+pub fn dot_pad(image_size_px: u32) -> u32 {
+    dot_ring_radius(image_size_px).ceil() as u32
+}
+
+/// Compose one minimap frame: the fetched map with the position dot at its true
+/// `(x, y)`, on a canvas padded so a dot on the map's edge is drawn whole.
+///
+/// The padding is transparent, so the part of the dot that overhangs the map
+/// lands on the video rather than being cut off or shifted. Moving the dot to
+/// keep it inside would misreport the one thing it exists to show.
+pub fn compose_frame(map: &image::RgbaImage, x: f64, y: f64) -> image::RgbaImage {
+    let across = map.width().min(map.height());
+    let ring = dot_ring_radius(across);
+    let pad = dot_pad(across);
+    let mut canvas = image::RgbaImage::from_pixel(
+        map.width() + pad * 2,
+        map.height() + pad * 2,
+        image::Rgba([0, 0, 0, 0]),
+    );
+    image::imageops::replace(&mut canvas, map, pad as i64, pad as i64);
+    stamp_dot(&canvas, x + pad as f64, y + pad as f64, ring)
 }
 
 /// Decode a fetched map image.
@@ -635,7 +655,7 @@ pub fn render_frames<P: AsRef<std::path::Path>>(
                 overview_framing(plan, track, panorama).ok_or("The route has no points")?;
             for (index, here) in panorama.iter().enumerate() {
                 let (x, y) = image_pixel(*here, center, zoom, plan.size_px);
-                write(&stamp_dot(&base, x, y), index)?;
+                write(&compose_frame(&base, x, y), index)?;
             }
             Ok(panorama.len())
         }
@@ -658,7 +678,7 @@ pub fn render_frames<P: AsRef<std::path::Path>>(
                 // Follow mode centres each map on the rider, so the dot is
                 // always the middle of its own image.
                 let middle = map.width() as f64 / 2.0;
-                write(&stamp_dot(&map, middle, map.height() as f64 / 2.0), index)?;
+                write(&compose_frame(&map, middle, map.height() as f64 / 2.0), index)?;
             }
             Ok(maps.len())
         }

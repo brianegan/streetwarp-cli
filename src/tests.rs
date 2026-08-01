@@ -1272,7 +1272,7 @@ fn fake_map_png(side: u32) -> Vec<u8> {
 #[test]
 fn the_dot_lands_on_the_projected_pixel() {
     let map = image::RgbaImage::from_pixel(200, 200, image::Rgba([200, 200, 200, 255]));
-    let stamped = minimap::stamp_dot(&map, 50.0, 60.0);
+    let stamped = minimap::stamp_dot(&map, 50.0, 60.0, minimap::dot_ring_radius(200));
 
     assert_ne!(
         stamped.get_pixel(50, 60),
@@ -1290,8 +1290,8 @@ fn the_dot_lands_on_the_projected_pixel() {
 #[test]
 fn the_dot_moves_when_the_position_does() {
     let map = image::RgbaImage::from_pixel(200, 200, image::Rgba([200, 200, 200, 255]));
-    let here = minimap::stamp_dot(&map, 40.0, 40.0);
-    let there = minimap::stamp_dot(&map, 160.0, 160.0);
+    let here = minimap::stamp_dot(&map, 40.0, 40.0, minimap::dot_ring_radius(200));
+    let there = minimap::stamp_dot(&map, 160.0, 160.0, minimap::dot_ring_radius(200));
     assert_ne!(here.get_pixel(40, 40), there.get_pixel(40, 40));
     assert_ne!(here.get_pixel(160, 160), there.get_pixel(160, 160));
 }
@@ -1299,7 +1299,7 @@ fn the_dot_moves_when_the_position_does() {
 #[test]
 fn a_dot_at_the_edge_still_draws_what_fits() {
     let map = image::RgbaImage::from_pixel(200, 200, image::Rgba([200, 200, 200, 255]));
-    let stamped = minimap::stamp_dot(&map, 0.0, 100.0);
+    let stamped = minimap::stamp_dot(&map, 0.0, 100.0, minimap::dot_ring_radius(200));
     assert_ne!(
         stamped.get_pixel(0, 100),
         map.get_pixel(0, 100),
@@ -1501,14 +1501,22 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
     // Solid magenta minimaps over a black video, so the overlay is
     // unmistakable against what sits underneath it.
     let frames = 6;
+    let plan = plan_in_corner(options::MinimapPosition::Br);
+    let across = plan.size_px * minimap::MAP_SCALE;
+    let pad = minimap::dot_pad(across);
+    // Shaped like a real composed frame: a magenta stand-in for the map on a
+    // transparent canvas padded all round.
     for index in 0..frames {
-        image::RgbaImage::from_pixel(288, 288, image::Rgba([255u8, 0, 255, 255]))
-            .save(dir.join(minimap::frame_filename(index)))
-            .unwrap();
+        let mut canvas =
+            image::RgbaImage::from_pixel(across + pad * 2, across + pad * 2, image::Rgba([0u8; 4]));
+        let map = image::RgbaImage::from_pixel(across, across, image::Rgba([255u8, 0, 255, 255]));
+        image::imageops::replace(&mut canvas, &map, pad as i64, pad as i64);
+        canvas.save(dir.join(minimap::frame_filename(index))).unwrap();
     }
 
-    let plan = plan_in_corner(options::MinimapPosition::Br);
-    let (x, y) = minimap::overlay_offsets(&plan, 640, 480);
+    let (map_x, map_y) = minimap::overlay_offsets(&plan, 640, 480);
+    let pad_video = pad / minimap::MAP_SCALE;
+    let (x, y) = (map_x - pad_video, map_y - pad_video);
     // A black source video standing in for the Street View sequence.
     ffmpeg::ffmpeg(
         &dir,
@@ -1524,9 +1532,9 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
         frames,
         ffmpeg::Motion::Skip,
         Some(ffmpeg::Overlay {
-            x,
-            y,
-            size_px: plan.size_px,
+            x: x as i32,
+            y: y as i32,
+            size_px: plan.size_px + pad_video * 2,
         }),
         "original.mp4",
         "out.mp4",
@@ -1546,7 +1554,8 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
 
     assert_eq!(rendered.dimensions(), (640, 480));
     let is_magenta = |p: &image::Rgba<u8>| p.0[0] > 180 && p.0[1] < 80 && p.0[2] > 180;
-    let middle_of_map = rendered.get_pixel(x + plan.size_px / 2, y + plan.size_px / 2);
+    // The map itself, not the padding, must land where the corner was asked for.
+    let middle_of_map = rendered.get_pixel(map_x + plan.size_px / 2, map_y + plan.size_px / 2);
     assert!(
         is_magenta(middle_of_map),
         "the minimap should fill the bottom-right corner, found {middle_of_map:?}"
@@ -1761,9 +1770,13 @@ fn a_rendered_overview_frame_puts_its_dot_at_the_projected_coordinate() {
     minimap::render_frames(&plan, &maps, &route, &route, &dir).unwrap();
 
     let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+    // Frames are composed on a canvas padded around the map, so the map's own
+    // pixel (x, y) sits one pad further in.
+    let pad = minimap::dot_pad(plan.size_px * minimap::MAP_SCALE) as f64;
     // Check a frame partway along, where a half-scale error would be obvious.
     for index in [0usize, 150, 299] {
         let (x, y) = minimap::image_pixel(route[index], centre, zoom, plan.size_px);
+        let (x, y) = (x + pad, y + pad);
         let frame = read_frame(&dir, index);
         let (width, height) = frame.dimensions();
         let at = |x: f64, y: f64| {
@@ -1779,8 +1792,14 @@ fn a_rendered_overview_frame_puts_its_dot_at_the_projected_coordinate() {
             "frame {index}: nothing was drawn at the projected pixel ({x:.1}, {y:.1})"
         );
         // A point well away from this frame's position is still bare map, so
-        // the dot really is a dot at that coordinate.
-        let far = if x > width as f64 / 2.0 { 4.0 } else { width as f64 - 4.0 };
+        // the dot really is a dot at that coordinate. Sampled inside the map
+        // rather than out in the transparent padding, which is not map at all.
+        let map_across = (plan.size_px * minimap::MAP_SCALE) as f64;
+        let far = if x > width as f64 / 2.0 {
+            pad + 4.0
+        } else {
+            pad + map_across - 4.0
+        };
         assert_eq!(
             at(far, y),
             base_grey,
@@ -1788,10 +1807,12 @@ fn a_rendered_overview_frame_puts_its_dot_at_the_projected_coordinate() {
         );
     }
 
-    // A corner well clear of a route running diagonally must still be bare map.
+    // A corner of the map well clear of a route running diagonally must still be
+    // bare map.
     let frame = read_frame(&dir, 150);
+    let corner = pad as u32 + 2;
     assert_eq!(
-        *frame.get_pixel(frame.width() - 2, 1),
+        *frame.get_pixel(frame.width() - 1 - corner, corner),
         base_grey,
         "the dot should be a dot, not a wash over the whole map"
     );
@@ -2310,65 +2331,59 @@ fn the_framing_spends_the_whole_map_on_the_route() {
 }
 
 #[test]
-fn a_dot_at_the_border_is_drawn_whole() {
-    // The route's extremes are exactly where the first and last dots sit, and a
-    // map fitted tight to the route puts them on the border. Rather than zoom
-    // out to make room, the dot is nudged just inside so all of it is drawn.
+fn the_dot_sits_at_its_true_position_even_on_the_map_edge() {
+    // The dot says where you are, so moving it to keep it inside the map is a
+    // lie about the one thing it exists to show. The canvas is padded instead
+    // and the overhang lands on the video.
     let map = image::RgbaImage::from_pixel(288, 288, image::Rgba([200, 200, 200, 255]));
-    let count = |stamped: &image::RgbaImage| {
-        stamped
-            .pixels()
-            .zip(map.pixels())
-            .filter(|(a, b)| a != b)
-            .count()
-    };
+    let pad = minimap::dot_pad(288) as f64;
 
-    let middle = count(&minimap::stamp_dot(&map, 144.0, 144.0));
-    assert!(middle > 0, "nothing was drawn in the middle of the map");
+    for (x, y) in [(144.0, 144.0), (0.0, 144.0), (288.0, 288.0), (0.0, 0.0)] {
+        let frame = minimap::compose_frame(&map, x, y);
+        let dot = frame
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p.0[3] == 255 && (p.0[0] > 240 || p.0[0] < 40))
+            .map(|(px, py, _)| (px as f64, py as f64))
+            .collect::<Vec<_>>();
+        let n = dot.len() as f64;
+        let cx = dot.iter().map(|p| p.0).sum::<f64>() / n;
+        let cy = dot.iter().map(|p| p.1).sum::<f64>() / n;
 
-    for (x, y) in [(0.0, 144.0), (288.0, 144.0), (144.0, 0.0), (0.0, 0.0)] {
-        let at_edge = count(&minimap::stamp_dot(&map, x, y));
-        // Rasterising a circle at a different sub-pixel offset moves the count
-        // by a pixel or so. Truncation at a border loses about half the dot, so
-        // the two are never close to being confused.
+        close(cx, x + pad, 1.0);
+        close(cy, y + pad, 1.0);
+    }
+}
+
+#[test]
+fn a_dot_hanging_off_the_map_is_still_drawn_whole() {
+    let map = image::RgbaImage::from_pixel(288, 288, image::Rgba([200, 200, 200, 255]));
+    let opaque = |f: &image::RgbaImage| f.pixels().filter(|p| p.0[3] == 255).count();
+    let bare = opaque(&minimap::compose_frame(&map, -1000.0, -1000.0));
+
+    let middle = opaque(&minimap::compose_frame(&map, 144.0, 144.0)) - bare;
+    for (x, y) in [(0.0, 144.0), (288.0, 144.0), (144.0, 288.0), (0.0, 0.0)] {
+        let at_edge = opaque(&minimap::compose_frame(&map, x, y)) - bare;
         assert!(
             at_edge * 100 >= middle * 95,
-            "a dot at ({x}, {y}) drew {at_edge} pixels against {middle} in the middle, \
-             so it was cut off by the edge rather than drawn whole"
+            "a dot at ({x}, {y}) drew {at_edge} pixels against {middle} in the middle"
         );
     }
 }
 
 #[test]
-fn nudging_the_dot_inside_moves_it_no_further_than_it_has_to() {
-    // The nudge lies about the position slightly, so it must be small: at most
-    // the dot's own radius, and only for points on the border.
+fn the_padding_around_the_map_is_transparent() {
+    // Opaque padding would draw a border round the minimap instead of letting
+    // the Street View show through where the dot is not.
     let map = image::RgbaImage::from_pixel(288, 288, image::Rgba([200, 200, 200, 255]));
-    let ring = minimap::dot_ring_radius(288);
-    let centre_of_drawn = |stamped: &image::RgbaImage| {
-        let pts = stamped
-            .enumerate_pixels()
-            .zip(map.pixels())
-            .filter(|((.., a), b)| a != b)
-            .map(|((x, y, _), _)| (x as f64, y as f64))
-            .collect::<Vec<_>>();
-        let n = pts.len() as f64;
-        (
-            pts.iter().map(|p| p.0).sum::<f64>() / n,
-            pts.iter().map(|p| p.1).sum::<f64>() / n,
-        )
-    };
+    let frame = minimap::compose_frame(&map, 144.0, 144.0);
+    let pad = minimap::dot_pad(288);
 
-    // Well inside: not moved at all.
-    let (x, y) = centre_of_drawn(&minimap::stamp_dot(&map, 100.0, 120.0));
-    close(x, 100.0, 1.0);
-    close(y, 120.0, 1.0);
-
-    // On the border: moved in by the ring and no more.
-    let (x, _) = centre_of_drawn(&minimap::stamp_dot(&map, 0.0, 144.0));
-    assert!(
-        x <= ring + 1.0,
-        "the dot was pushed {x:.1} in when {ring:.1} would do"
+    assert_eq!(frame.dimensions(), (288 + pad * 2, 288 + pad * 2));
+    assert_eq!(frame.get_pixel(0, 0).0[3], 0, "the corner should be see-through");
+    assert_eq!(
+        frame.get_pixel(pad, pad),
+        map.get_pixel(0, 0),
+        "the map should start exactly one pad in"
     );
 }
 

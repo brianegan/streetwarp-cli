@@ -572,11 +572,15 @@ async fn create_video<F: Fetch>(
                 drawn, n_points,
                 "drew {drawn} minimaps for a {n_points} frame video"
             );
-            let (x, y) = minimap::overlay_offsets(plan, VIDEO_WIDTH, VIDEO_HEIGHT);
+            // `overlay_offsets` places the map. The composed frame is larger,
+            // padded so a dot on the map's edge is still drawn whole, so it
+            // starts one pad earlier for the map to land where it was asked to.
+            let (map_x, map_y) = minimap::overlay_offsets(plan, VIDEO_WIDTH, VIDEO_HEIGHT);
+            let pad = minimap::dot_pad(plan.size_px * minimap::MAP_SCALE) / minimap::MAP_SCALE;
             Some(Overlay {
-                x,
-                y,
-                size_px: plan.size_px,
+                x: map_x as i32 - pad as i32,
+                y: map_y as i32 - pad as i32,
+                size_px: plan.size_px + pad * 2,
             })
         }
     };
