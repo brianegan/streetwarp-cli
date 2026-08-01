@@ -1,4 +1,7 @@
+mod cache;
+mod fetch;
 mod ffmpeg;
+mod minimap;
 mod optim;
 mod options;
 mod progress;
@@ -19,9 +22,10 @@ use geo::{Bearing, Distance, Geodesic, Haversine, InterpolatePoint, Point};
 use fs_extra::dir::{get_dir_content, get_size};
 use futures::{StreamExt, stream};
 use rayon::prelude::*;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use cache::Cache;
+use fetch::{Fetch, HttpFetcher};
 use ffmpeg::*;
 use options::CLI_OPTIONS;
 use progress::*;
@@ -108,101 +112,190 @@ impl GPXPoint {
     }
 }
 
-/// For each input point_bearing, request the streetview image from Google's static API.
-/// Save each image as {index}.jpg within out_dir.
-async fn get_images<P: AsRef<Path>>(point_bearings: &[SerializablePointBearing], out_dir: &P) {
-    let url = |point_bearing: &SerializablePointBearing| {
-        format!(
-            "https://maps.googleapis.com/maps/api/streetview?size=640x480&location={},{}&fov=100&source=outdoor&heading={}&pitch=0&key={}",
-            point_bearing.lat, point_bearing.lng, point_bearing.bearing, CLI_OPTIONS.api_key
-        )
-    };
-    let total_requests = point_bearings.len();
-    let mut requests_completed = 0;
-    let client = Client::new();
-    let bodies = stream::iter(point_bearings.iter().map(url).enumerate())
-        .map(|(index, url)| {
-            let client = &client;
-            async move {
-                let resp = client.get(&url).send().await;
-                (index, resp.unwrap().bytes().await)
-            }
-        })
-        .buffer_unordered(CLI_OPTIONS.network_concurrency.unwrap_or(40));
-
-    bodies
-        .map(|(index, bytes)| {
-            requests_completed += 1;
-            progress(&format!(
-                "Progress: {:.1}% ({}/{})",
-                (requests_completed as f64 / total_requests as f64) * 100.0,
-                requests_completed,
-                total_requests
-            ));
-            (index, bytes)
-        })
-        .for_each(|(index, bytes)| async move {
-            let filename = out_dir.as_ref().join(format!("{}.jpg", index));
-            tokio::fs::write(filename, bytes.unwrap()).await.unwrap();
-        })
-        .await;
-    // TODO: check that the images are all in fact jpg, and not an error message (which is png)
-    // TODO: if we see a png image, then convert it to jpg
+/// The Street View image request for one point.
+fn streetview_image_url(point_bearing: &SerializablePointBearing, api_key: &str) -> String {
+    format!(
+        "https://maps.googleapis.com/maps/api/streetview?size=640x480&location={},{}&fov=100&source=outdoor&heading={}&pitch=0&key={}",
+        point_bearing.lat, point_bearing.lng, point_bearing.bearing, api_key
+    )
 }
 
-/// For each input point_bearing, request its streetview metadata from Google's static API.
-/// Sends requests in parallel determined by network_concurrency option.
-/// Return array of metadata, one item per input point.
-async fn get_metadata(point_bearings: &[PointBearing]) -> Vec<GSVMetadata> {
-    // use metadata requests to skip errors https://developers.google.com/maps/documentation/streetview/metadata
-    // and to correct points lat/lng
-    // and to skip images that are a copy of the previous one
-    let url = |point_bearing: &PointBearing| {
-        format!(
-            "https://maps.googleapis.com/maps/api/streetview/metadata?location={},{}&source=outdoor&key={}",
-            point_bearing.point.lat, point_bearing.point.lng, CLI_OPTIONS.api_key
-        )
-    };
-    let client = Client::new();
-    let total_request_count = point_bearings.len();
-    let mut requests_completed = 0;
-    let bodies = stream::iter(point_bearings.iter().map(url).enumerate())
-        .map(|(index, url)| {
-            let client = &client;
-            async move {
-                let resp = client.get(&url).send().await;
-                let resp = resp.expect("Error in streetview metadata response");
-                if !resp.status().is_success() {
-                    panic!(
-                        "Error code in streetview metadata response: {:?}",
-                        resp.status()
-                    );
-                }
-                (index, resp.bytes().await)
-            }
-        })
-        .buffer_unordered(CLI_OPTIONS.network_concurrency.unwrap_or(40));
+/// The Street View metadata request for one point.
+fn streetview_metadata_url(point_bearing: &PointBearing, api_key: &str) -> String {
+    format!(
+        "https://maps.googleapis.com/maps/api/streetview/metadata?location={},{}&source=outdoor&key={}",
+        point_bearing.point.lat, point_bearing.point.lng, api_key
+    )
+}
 
-    let mut indexed_metadata = bodies
-        .map(|(index, bytes)| {
-            requests_completed += 1;
-            // Print progress message with requests completed / total requests as percentage
-            let percent = (requests_completed as f64 / total_request_count as f64) * 100.0;
-            progress(&format!(
-                "Progress: {:.1}% ({}/{})",
-                percent, requests_completed, total_request_count
-            ));
-            let parsed = serde_json::from_slice::<GSVMetadata>(&bytes.unwrap())
-                .expect("Could not parse GSV metadata");
-            (index, parsed)
+/// The fetch stages of a render, and everything they need to reach Google.
+///
+/// These arrive as fields rather than being read from [`CLI_OPTIONS`] so a test
+/// can hand over a recording fetcher and observe exactly which requests a render
+/// makes.
+struct Fetching<'a, F: Fetch> {
+    fetcher: &'a F,
+    cache: &'a Cache,
+    api_key: &'a str,
+    concurrency: usize,
+}
+
+impl<F: Fetch> Fetching<'_, F> {
+    /// For each input point_bearing, request the streetview image from Google's static API.
+    /// Save each image as {index}.jpg within out_dir.
+    async fn images<P: AsRef<Path>>(
+        &self,
+        point_bearings: &[SerializablePointBearing],
+        out_dir: &P,
+    ) {
+        let total_requests = point_bearings.len();
+        let mut requests_completed = 0;
+        let bodies = stream::iter(
+            point_bearings
+                .iter()
+                .map(|pb| streetview_image_url(pb, self.api_key))
+                .enumerate(),
+        )
+        .map(|(index, url)| async move {
+            let bytes =
+                fetch::fetch_cached(self.fetcher, self.cache, cache::Kind::StreetView, &url).await;
+            (index, bytes)
         })
-        .collect::<Vec<_>>()
-        .await;
-    indexed_metadata.sort_unstable_by_key(|&(index, _)| index);
-    indexed_metadata
-        .into_iter()
-        .map(|(_, data)| data)
-        .collect::<Vec<_>>()
+        .buffer_unordered(self.concurrency);
+
+        bodies
+            .map(|(index, bytes)| {
+                requests_completed += 1;
+                progress(&format!(
+                    "Progress: {:.1}% ({}/{})",
+                    (requests_completed as f64 / total_requests as f64) * 100.0,
+                    requests_completed,
+                    total_requests
+                ));
+                (index, bytes)
+            })
+            .for_each(|(index, bytes)| async move {
+                let filename = out_dir.as_ref().join(format!("{}.jpg", index));
+                let bytes = bytes.expect("Error in streetview image response");
+                tokio::fs::write(filename, bytes).await.unwrap();
+            })
+            .await;
+        // TODO: check that the images are all in fact jpg, and not an error message (which is png)
+        // TODO: if we see a png image, then convert it to jpg
+    }
+
+    /// For each input point_bearing, request its streetview metadata from Google's static API.
+    /// Sends requests in parallel determined by network_concurrency option.
+    /// Return array of metadata, one item per input point.
+    async fn metadata(&self, point_bearings: &[PointBearing]) -> Vec<GSVMetadata> {
+        // use metadata requests to skip errors https://developers.google.com/maps/documentation/streetview/metadata
+        // and to correct points lat/lng
+        // and to skip images that are a copy of the previous one
+        let total_request_count = point_bearings.len();
+        let mut requests_completed = 0;
+        let bodies = stream::iter(
+            point_bearings
+                .iter()
+                .map(|pb| streetview_metadata_url(pb, self.api_key))
+                .enumerate(),
+        )
+        .map(|(index, url)| async move {
+            let bytes =
+                fetch::fetch_cached(self.fetcher, self.cache, cache::Kind::Metadata, &url).await;
+            (index, bytes.expect("Error in streetview metadata response"))
+        })
+        .buffer_unordered(self.concurrency);
+
+        let mut indexed_metadata = bodies
+            .map(|(index, bytes)| {
+                requests_completed += 1;
+                // Print progress message with requests completed / total requests as percentage
+                let percent = (requests_completed as f64 / total_request_count as f64) * 100.0;
+                progress(&format!(
+                    "Progress: {:.1}% ({}/{})",
+                    percent, requests_completed, total_request_count
+                ));
+                let parsed = serde_json::from_slice::<GSVMetadata>(&bytes)
+                    .expect("Could not parse GSV metadata");
+                (index, parsed)
+            })
+            .collect::<Vec<_>>()
+            .await;
+        indexed_metadata.sort_unstable_by_key(|&(index, _)| index);
+        indexed_metadata
+            .into_iter()
+            .map(|(_, data)| data)
+            .collect::<Vec<_>>()
+    }
+
+    /// Fetch the minimap images a render needs.
+    ///
+    /// Every request here is a Maps Static one, so calling this before any
+    /// Street View fetch means a key without that API switched on costs nothing
+    /// instead of surfacing after the frames are paid for.
+    async fn minimaps(&self, urls: &[String]) -> Result<Vec<Vec<u8>>, String> {
+        let mut images = Vec::with_capacity(urls.len());
+        let fetched = stream::iter(urls.iter().enumerate())
+            .map(|(index, url)| async move {
+                (
+                    index,
+                    fetch::fetch_cached(self.fetcher, self.cache, cache::Kind::Map, url).await,
+                )
+            })
+            .buffer_unordered(self.concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        let mut sorted = fetched;
+        sorted.sort_unstable_by_key(|(index, _)| *index);
+        for (_, result) in sorted {
+            match result {
+                Ok(bytes) => images.push(bytes),
+                Err(err) => return Err(minimap::map_failure_message(&err)),
+            }
+        }
+        Ok(images)
+    }
+}
+
+/// Fetch everything a render pulls from Google, minimaps first.
+///
+/// The order is the point. A minimap failure has to happen before the Street
+/// View frames are paid for, so this owns the sequence rather than leaving it to
+/// whoever calls the two stages.
+async fn fetch_render_inputs<F: Fetch, P: AsRef<Path>>(
+    fetching: &Fetching<'_, F>,
+    plan: Option<&minimap::MinimapPlan>,
+    metadata_result: &MetadataResult,
+    out_dir: &P,
+) -> Result<Vec<Vec<u8>>, String> {
+    let maps = match plan {
+        None => Vec::new(),
+        Some(plan) => {
+            progress_stage("Fetching minimap from Google Maps");
+            let track = metadata_result
+                .original_points
+                .iter()
+                .map(|p| minimap::LatLng {
+                    lat: p.lat,
+                    lng: p.lng,
+                })
+                .collect::<Vec<_>>();
+            let panorama = metadata_result
+                .gps_points
+                .iter()
+                .map(|p| minimap::LatLng {
+                    lat: p.lat,
+                    lng: p.lng,
+                })
+                .collect::<Vec<_>>();
+            let urls = minimap::minimap_urls(plan, &track, &panorama, fetching.api_key);
+            fetching.minimaps(&urls).await?
+        }
+    };
+
+    progress_stage("Fetching images from Streetview");
+    fetching.images(&metadata_result.gps_points, out_dir).await;
+    Ok(maps)
 }
 
 /// Given list of point_bearings and their metadata (expect arrays of same length),
@@ -371,7 +464,11 @@ fn read_gpx<R: std::io::Read>(reader: R) -> ReadResult {
     }
 }
 
-async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) {
+async fn create_video<F: Fetch>(
+    fetching: &Fetching<'_, F>,
+    output_dir: PathBuf,
+    mut metadata_result: MetadataResult,
+) {
     // Remove first offset frames from gps points
     metadata_result
         .gps_points
@@ -380,8 +477,18 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
     metadata_result
         .gps_points
         .truncate(CLI_OPTIONS.max_frames.unwrap_or(metadata_result.frames));
-    progress_stage("Fetching images from Streetview");
-    get_images(&metadata_result.gps_points, &output_dir).await;
+    let plan = minimap::MinimapPlan::resolve(
+        CLI_OPTIONS.minimap,
+        CLI_OPTIONS.minimap_position,
+        CLI_OPTIONS.minimap_size,
+        CLI_OPTIONS.minimap_margin,
+        CLI_OPTIONS.minimap_zoom,
+        VIDEO_WIDTH,
+        VIDEO_HEIGHT,
+    );
+    let maps = fetch_render_inputs(fetching, plan.as_ref(), &metadata_result, &output_dir)
+        .await
+        .unwrap_or_else(|message| panic!("{message}"));
     let dir_size = get_size(&output_dir).unwrap_or(0);
     let dir_files = get_dir_content(&output_dir)
         .map(|d| d.files.len())
@@ -423,6 +530,34 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
             .unwrap_or("streetwarp-lapse".to_string())
     );
 
+    let overlay = plan.as_ref().map(|plan| {
+        progress_stage("Drawing the minimap");
+        let track = metadata_result
+            .original_points
+            .iter()
+            .map(|p| minimap::LatLng {
+                lat: p.lat,
+                lng: p.lng,
+            })
+            .collect::<Vec<_>>();
+        let panorama = metadata_result
+            .gps_points
+            .iter()
+            .map(|p| minimap::LatLng {
+                lat: p.lat,
+                lng: p.lng,
+            })
+            .collect::<Vec<_>>();
+        minimap::render_frames(plan, &maps, &track, &panorama, &output_dir)
+            .unwrap_or_else(|message| panic!("{message}"));
+        let (x, y) = minimap::overlay_offsets(plan, VIDEO_WIDTH, VIDEO_HEIGHT);
+        Overlay {
+            x,
+            y,
+            size_px: plan.size_px,
+        }
+    });
+
     progress_stage(&format!("Joining {} images into video sequence", n_points));
     create_timelapse(&output_dir, n_points, &original_timelapse_name).await;
     let output_timelapse_name = &CLI_OPTIONS
@@ -430,37 +565,39 @@ async fn create_video(output_dir: PathBuf, mut metadata_result: MetadataResult) 
         .clone()
         .unwrap_or("streetwarp-lapse.mp4".to_string());
 
-    match CLI_OPTIONS
+    let motion = match CLI_OPTIONS
         .minterp
         .clone()
         .unwrap_or("good".to_string())
         .as_str()
     {
-        "skip" => {
-            let result = tokio::fs::rename(&original_timelapse_name, &output_timelapse_name).await;
-            result.expect("Could not rename video files");
-        }
-        "fast" => {
-            progress_stage("Blending frames to apply blur");
-            blend_timelapse(
-                &output_dir,
-                n_points,
-                &original_timelapse_name,
-                output_timelapse_name,
-            )
-            .await
-        }
-        _ => {
-            progress_stage("Interpolating motion to apply blur");
-            minterp_timelapse(
-                &output_dir,
-                n_points,
-                &original_timelapse_name,
-                output_timelapse_name,
-            )
-            .await
-        }
+        "skip" => Motion::Skip,
+        "fast" => Motion::Blend,
+        _ => Motion::Minterp,
     };
+
+    if motion == Motion::Skip && overlay.is_none() {
+        // Nothing to do to the video at all, so move it rather than paying for
+        // a re-encode that would only cost quality.
+        tokio::fs::rename(&original_timelapse_name, &output_timelapse_name)
+            .await
+            .expect("Could not rename video files");
+    } else {
+        progress_stage(match motion {
+            Motion::Skip => "Compositing the minimap",
+            Motion::Blend => "Blending frames to apply blur",
+            Motion::Minterp => "Interpolating motion to apply blur",
+        });
+        finish_timelapse(
+            &output_dir,
+            n_points,
+            motion,
+            overlay,
+            &original_timelapse_name,
+            output_timelapse_name,
+        )
+        .await;
+    }
     let dir_size = get_size(&output_dir).unwrap_or(0);
     progress(&format!(
         "Created video, total output size: {:.2} MB",
@@ -491,11 +628,24 @@ async fn main() {
         println!("output dir is {}", output_dir.to_string_lossy());
     }
 
+    let http = HttpFetcher::new();
+    let cache = if CLI_OPTIONS.no_cache {
+        Cache::disabled()
+    } else {
+        Cache::in_platform_cache_dir()
+    };
+    let fetching = Fetching {
+        fetcher: &http,
+        cache: &cache,
+        api_key: &CLI_OPTIONS.api_key,
+        concurrency: CLI_OPTIONS.network_concurrency.unwrap_or(40),
+    };
+
     if CLI_OPTIONS.use_metadata {
         progress_stage("Parsing metadata");
         let metadata_result: MetadataResult =
             serde_json::from_reader(reader).expect("Could not parse submitted metadata result");
-        create_video(output_dir, metadata_result).await;
+        create_video(&fetching, output_dir, metadata_result).await;
         return;
     }
 
@@ -534,7 +684,7 @@ async fn main() {
         &distances,
     ));
     progress_stage("Fetching Streetview metadata");
-    let metadata = get_metadata(&points).await;
+    let metadata = fetching.metadata(&points).await;
     progress_stage(&format!(
         "Found metadata for {} streetview points",
         metadata.len()
@@ -577,5 +727,5 @@ async fn main() {
         }
         return;
     }
-    create_video(output_dir, metadata_result).await;
+    create_video(&fetching, output_dir, metadata_result).await;
 }

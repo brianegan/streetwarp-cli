@@ -6,6 +6,65 @@ use tokio::process::Command;
 use crate::options::CLI_OPTIONS;
 use crate::progress::progress;
 
+/// The output video's dimensions, fixed by the encode in [`create_timelapse`].
+pub const VIDEO_WIDTH: u32 = 640;
+pub const VIDEO_HEIGHT: u32 = 480;
+
+/// How the final pass smooths motion between Street View frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    /// Leave the 24fps sequence as it is.
+    Skip,
+    /// Interpolate to 48fps and average pairs back down to 24.
+    Blend,
+    /// Motion-compensated interpolation up to 72fps.
+    Minterp,
+}
+
+/// Where the minimap goes and how big it is, in output video pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Overlay {
+    pub x: u32,
+    pub y: u32,
+    pub size_px: u32,
+}
+
+impl Motion {
+    /// The filter chain that turns the source video into `[base]`.
+    fn chain(self) -> &'static str {
+        match self {
+            Motion::Skip => "null",
+            Motion::Blend => "minterpolate=fps=48,tblend=all_mode=average,framestep=2",
+            Motion::Minterp => "minterpolate='mi_mode=mci:mc_mode=aobmc:vsbmc=1:fps=72'",
+        }
+    }
+
+    /// Rendered frames per source frame, which is what makes the progress
+    /// percentage mean the same thing whichever mode is running.
+    fn progress_scale(self) -> f64 {
+        match self {
+            Motion::Skip | Motion::Blend => 100.0,
+            Motion::Minterp => 33.3,
+        }
+    }
+}
+
+/// Build the filter graph for the final encode.
+///
+/// The overlay is appended after the motion stage on purpose. Interpolation
+/// then only ever sees Street View imagery, and the map composites on top of the
+/// result, so map labels stay crisp instead of being smeared by motion
+/// estimation that has no idea they are graphics.
+pub fn final_filter_graph(motion: Motion, overlay: Option<Overlay>) -> String {
+    match overlay {
+        None => format!("[0:v]{}[out]", motion.chain()),
+        Some(Overlay { x, y, size_px }) => format!(
+            "[0:v]{}[base];[1:v]scale={size_px}:{size_px}[map];[base][map]overlay={x}:{y}[out]",
+            motion.chain()
+        ),
+    }
+}
+
 type GetProgress = dyn Fn(usize) -> f64;
 pub async fn ffmpeg<P: AsRef<Path>>(working_dir: P, get_progress: &GetProgress, args: &[&str]) {
     let mut command = Command::new("ffmpeg");
@@ -75,21 +134,33 @@ pub async fn create_timelapse<P: AsRef<Path>>(image_dir: P, num_images: usize, o
     .await;
 }
 
-pub async fn blend_timelapse<P: AsRef<Path>>(
+/// Run the final encode: motion smoothing, then the minimap composite.
+///
+/// One pass does both, so the video is encoded once rather than being decoded
+/// and re-encoded to lay the map on afterwards.
+pub async fn finish_timelapse<P: AsRef<Path>>(
     image_dir: P,
     num_images: usize,
+    motion: Motion,
+    overlay: Option<Overlay>,
     original_filename: &str,
     out_filename: &str,
 ) {
-    // ffmpeg -i streetwarp.mp4-original.mp4 -filter_complex "[0:v]minterpolate=fps=48.0,tblend=all_mode=average,framestep=2[out]" -map "[out]" -c:v libx264 -crf 17 -pix_fmt yuv420p -y -preset ultrafast -progress streetwarp-lapse24_blur.mp4
-    ffmpeg(
-        image_dir,
-        &(move |frame| 100.0 * (frame as f64) / (num_images as f64)),
-        &[
-            "-i",
-            original_filename,
+    let graph = final_filter_graph(motion, overlay);
+    let mut args = vec!["-i".to_string(), original_filename.to_string()];
+    if overlay.is_some() {
+        // Read the minimaps at the source frame rate so map frame N lines up
+        // with Street View frame N. Interpolation raises the output rate past
+        // this, and overlay holds each map frame across the gap.
+        args.extend(
+            ["-framerate", "24", "-pattern_type", "sequence", "-start_number", "0", "-i", "%d.map.png"]
+                .map(String::from),
+        );
+    }
+    args.extend(
+        [
             "-filter_complex",
-            "[0:v]minterpolate=fps=48,tblend=all_mode=average,framestep=2[out]",
+            &graph,
             "-map",
             "[out]",
             "-c:v",
@@ -106,41 +177,16 @@ pub async fn blend_timelapse<P: AsRef<Path>>(
             "pipe:1",
             "-y",
             out_filename,
-        ],
-    )
-    .await;
-}
+        ]
+        .map(String::from),
+    );
 
-pub async fn minterp_timelapse<P: AsRef<Path>>(
-    image_dir: P,
-    num_images: usize,
-    original_filename: &str,
-    out_filename: &str,
-) {
-    // ffmpeg -i streetwarp-lapse24.mp4 -filter:v "minterpolate='mi_mode=mci:mc_mode=aobmc:vsbmc=1:fps=50'" -c:v libx264 -crf 17 -pix_fmt yuv420p -y -preset ultrafast streetwarp-lapse24_flow.mp4
+    let scale = motion.progress_scale();
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
     ffmpeg(
         image_dir,
-        &(move |frame| 33.3 * (frame as f64) / (num_images as f64)),
-        &[
-            "-i",
-            original_filename,
-            "-filter:v",
-            "minterpolate='mi_mode=mci:mc_mode=aobmc:vsbmc=1:fps=72'",
-            "-c:v",
-            "libx264",
-            "-crf",
-            "22",
-            "-pix_fmt",
-            "yuv420p",
-            "-preset",
-            "faster",
-            "-movflags",
-            "faststart",
-            "-progress",
-            "pipe:1",
-            "-y",
-            out_filename,
-        ],
+        &(move |frame| scale * (frame as f64) / (num_images as f64)),
+        &borrowed,
     )
     .await;
 }

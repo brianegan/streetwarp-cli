@@ -1,6 +1,28 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 use std::sync::LazyLock;
+
+/// What the minimap overlay shows, if anything.
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MinimapMode {
+    /// No overlay. This is the default; the minimap costs extra API calls.
+    Off,
+    /// One map framing the whole route, with a dot moving along it. Costs a
+    /// single Static Maps request for the entire render.
+    Overview,
+    /// A map centred on the current position, panning as the video plays. Costs
+    /// one Static Maps request per frame.
+    Follow,
+}
+
+/// Which corner of the video the minimap sits in.
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MinimapPosition {
+    Tl,
+    Tr,
+    Bl,
+    Br,
+}
 
 #[derive(Parser)]
 pub struct Cli {
@@ -70,6 +92,43 @@ pub struct Cli {
     /// Additional argument to pass to optimization executable (after output folder)
     #[arg(long)]
     pub optimizer_arg: Option<String>,
+
+    /// Draw a small map over the video showing where each frame sits on the route.
+    /// Available: off, overview, follow. Default: off.
+    #[arg(long, value_enum, default_value_t = MinimapMode::Off)]
+    pub minimap: MinimapMode,
+
+    /// Corner the minimap sits in. Available: tl, tr, bl, br. Default: br.
+    #[arg(long, value_enum, default_value_t = MinimapPosition::Br)]
+    pub minimap_position: MinimapPosition,
+
+    /// Minimap size as a percent of the video's shorter side, default: 30.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub minimap_size: u32,
+
+    /// Gap between the minimap and the edge of the video in pixels, default: 12.
+    #[arg(long, default_value_t = 12)]
+    pub minimap_margin: u32,
+
+    /// Zoom level for follow-mode minimaps, default: 16.
+    #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u32).range(0..=21))]
+    pub minimap_zoom: u32,
+
+    /// Don't read or write the on-disk response cache, so every image is
+    /// fetched and paid for again. Default: off.
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
-pub static CLI_OPTIONS: LazyLock<Cli> = LazyLock::new(Cli::parse);
+pub static CLI_OPTIONS: LazyLock<Cli> = LazyLock::new(|| {
+    if cfg!(test) {
+        // Under `cargo test` the process arguments belong to the test harness,
+        // not to a streetwarp command line, so parsing them would abort the run
+        // the first time anything reads an option. Progress reporting reads one
+        // on every fetch, so that would take the fetch tests down with it.
+        // Tests that care about a specific option parse their own `Cli`.
+        Cli::parse_from(["streetwarp", "test.gpx", "--api-key", "test-key"])
+    } else {
+        Cli::parse()
+    }
+});
