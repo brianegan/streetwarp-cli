@@ -38,7 +38,12 @@ impl HttpFetcher {
 
 impl Fetch for HttpFetcher {
     async fn get(&self, url: &str) -> Result<Vec<u8>, FetchError> {
-        let fail = |status, message: String| FetchError { status, message };
+        let fail = |status, message: String| FetchError {
+            status,
+            // reqwest's Display carries the failing URL, and the URL carries the
+            // key.
+            message: crate::cache::redact_api_key(&message),
+        };
         let response = self
             .client
             .get(url)

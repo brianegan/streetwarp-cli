@@ -1569,12 +1569,12 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
 /// test can tell you.
 ///
 /// Ignored by default because it needs a key and spends a request. Run with:
-/// `STREETWARP_API_KEY=... cargo test -- --ignored`
+/// `GOOGLE_API_KEY=... cargo test -- --ignored`
 #[tokio::test]
 #[ignore = "needs a real Google API key; run with --ignored"]
 async fn google_serves_the_overview_map_this_program_asks_for() {
-    let api_key = std::env::var("STREETWARP_API_KEY")
-        .expect("set STREETWARP_API_KEY to run the live minimap test");
+    let api_key = std::env::var("GOOGLE_API_KEY")
+        .expect("set GOOGLE_API_KEY to run the live minimap test");
     let plan = overview_plan();
     let route = (0..50)
         .map(|i| minimap::LatLng {
@@ -2202,7 +2202,7 @@ fn the_api_key_can_come_from_the_environment_instead_of_the_command_line() {
 
     assert_eq!(
         api_key.get_env(),
-        Some(std::ffi::OsStr::new("STREETWARP_API_KEY")),
+        Some(std::ffi::OsStr::new("GOOGLE_API_KEY")),
         "the key must be settable without putting it in shell history"
     );
 }
@@ -2222,5 +2222,58 @@ fn help_never_prints_the_api_key_it_read_from_the_environment() {
     assert!(
         api_key.is_hide_env_values_set(),
         "--help would print the api key read from the environment"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_request_never_puts_the_api_key_in_its_error() {
+    // reqwest appends "for url (...)" to its Display, and that URL carries the
+    // key. The error text ends up in a panic and in the minimap failure message,
+    // so a DNS or connection failure would print the key to the terminal.
+    // Port 1 refuses instantly and needs no DNS.
+    let fetcher = fetch::HttpFetcher::new();
+    let url = "http://127.0.0.1:1/maps/api/streetview?location=1,2&key=SUPER-SECRET-KEY";
+
+    let error = fetcher
+        .get(url)
+        .await
+        .expect_err("a connection to port 1 should fail");
+
+    assert!(
+        !error.message.contains("SUPER-SECRET-KEY"),
+        "the api key leaked into an error message: {}",
+        error.message
+    );
+    assert!(
+        !minimap::map_failure_message(&error).contains("SUPER-SECRET-KEY"),
+        "the api key leaked into the minimap failure message"
+    );
+}
+
+#[test]
+fn redaction_removes_a_key_wherever_it_appears_in_a_message() {
+    assert_eq!(
+        cache::redact_api_key("error sending request for url (https://x/y?a=1&key=SECRET)"),
+        "error sending request for url (https://x/y?a=1&key=REDACTED)"
+    );
+    assert_eq!(
+        cache::redact_api_key("https://x/y?key=SECRET&a=1"),
+        "https://x/y?key=REDACTED&a=1"
+    );
+    assert_eq!(cache::redact_api_key("key=SECRET"), "key=REDACTED");
+}
+
+#[test]
+fn redaction_leaves_alone_what_only_looks_like_a_key() {
+    assert_eq!(cache::redact_api_key("monkey=1"), "monkey=1");
+    assert_eq!(cache::redact_api_key("?monkey=1&okey=2"), "?monkey=1&okey=2");
+    assert_eq!(cache::redact_api_key("no parameters here"), "no parameters here");
+}
+
+#[test]
+fn redaction_handles_a_message_carrying_more_than_one_key() {
+    assert_eq!(
+        cache::redact_api_key("first https://a?key=ONE then https://b?key=TWO"),
+        "first https://a?key=REDACTED then https://b?key=REDACTED"
     );
 }

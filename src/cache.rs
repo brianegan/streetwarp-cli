@@ -49,6 +49,38 @@ pub fn without_api_key(url: &str) -> String {
     }
 }
 
+/// Replace the value of any `key=` parameter appearing anywhere in `text`.
+///
+/// Nothing here formats a request URL into a message deliberately, but reqwest
+/// puts the failing URL into its own error `Display`, so an error string carries
+/// the API key without anyone asking it to. That string reaches a panic and the
+/// terminal, so it gets scrubbed at the point the error is built rather than
+/// trusted not to travel.
+pub fn redact_api_key(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("key=") {
+        let (before, from_key) = rest.split_at(at);
+        // Only a parameter when it starts one, so `monkey=1` is left alone.
+        let starts_parameter = before.is_empty()
+            || matches!(before.as_bytes()[before.len() - 1], b'?' | b'&');
+        out.push_str(before);
+        out.push_str("key=");
+        let value = &from_key["key=".len()..];
+        if !starts_parameter {
+            rest = value;
+            continue;
+        }
+        out.push_str("REDACTED");
+        let end = value
+            .find(|c: char| c == '&' || c == ')' || c.is_whitespace())
+            .unwrap_or(value.len());
+        rest = &value[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// What sort of response is being cached. Each kind gets its own subdirectory
 /// and file extension, so the cache stays browsable by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

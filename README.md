@@ -24,13 +24,13 @@ To **avoid hitting your API quota**, pass in the `--dry-run` option!
 
 ### Setting your API key
 
-Pass `--api-key`, or set `STREETWARP_API_KEY` and leave the flag off. Prefer the environment variable: a key on the command line goes into your shell history and is visible in `ps` to anything else running on the machine.
+Pass `--api-key`, or set `GOOGLE_API_KEY` and leave the flag off. Prefer the environment variable: a key on the command line goes into your shell history and is visible in `ps` to anything else running on the machine.
 
 With mise, put it in `mise.local.toml`, which is gitignored:
 
 ```toml
 [env]
-STREETWARP_API_KEY = "your-key-here"
+GOOGLE_API_KEY = "your-key-here"
 ```
 
 `mise trust` once, and the key is set for any command you run in this directory. `--help` shows the variable name but never its value.
@@ -48,21 +48,22 @@ streetwarp route.gpx --dry-run --json
 # A 30 frame taste of the route, about $0.21.
 streetwarp route.gpx --max-frames 30 --minimap overview
 
-# Fewer frames per mile is the other dial, and it costs nothing to try.
-streetwarp route.gpx --frames-per-mile 40
+# Fewer frames per mile is the other dial. Dry run it to see the count fall
+# before you pay for it.
+streetwarp route.gpx --frames-per-mile 40 --dry-run --json
 ```
 
 Multiply the `frames` figure from the dry run by $0.007, and add $0.002 per frame again if you use `--minimap follow`. Start with `--minimap overview`, which costs one map request no matter how long the route is.
 
-Two things worth knowing. `--dry-run` still makes metadata requests, which are free but not zero network. And every response is cached, so re-running the same route costs nothing at Google: iterate freely once the first render is paid for.
+Worth knowing: `--dry-run` is free but not zero network, since it still makes metadata requests.
 
-Every response is cached on disk by default, so re-rendering a route you have already fetched costs nothing. The cache lives in your platform cache directory (`~/Library/Caches/streetwarp` on macOS, `~/.cache/streetwarp` on Linux) and is keyed by request rather than by API key, so rotating a key keeps it. Pass `--no-cache` to fetch everything again.
+Every response is cached on disk by default, so re-rendering a route you have already fetched costs nothing and you can iterate on the minimap freely once the first render is paid for. The cache lives in your platform cache directory (`~/Library/Caches/streetwarp` on macOS, `~/.cache/streetwarp` on Linux) and is keyed by request rather than by API key, so rotating a key keeps it. Pass `--no-cache` to fetch everything again.
 
 ### Minimap
 Draw a small map over the video showing where each frame sits on the route, so you can see at a glance whether the render wandered off your track.
 
 ```
-streetwarp route.gpx --api-key KEY --minimap overview
+streetwarp route.gpx --minimap overview
 ```
 
 It draws two lines: your GPX track in blue, and the path the video actually follows in orange. Those differ wherever Google snapped a sample to a panorama on a different road, which is exactly the case worth catching.

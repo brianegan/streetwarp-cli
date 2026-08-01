@@ -29,10 +29,10 @@ pub struct Cli {
     /// The path to the file to read, accepts .gpx and .json (format: metadata result) files
     pub input_path: PathBuf,
 
-    /// Key for google streetview static API. Reads STREETWARP_API_KEY when the
+    /// Key for google streetview static API. Reads GOOGLE_API_KEY when the
     /// flag is absent, which keeps the key out of your shell history and out of
     /// the process list.
-    #[arg(long, env = "STREETWARP_API_KEY", hide_env_values = true)]
+    #[arg(long, env = "GOOGLE_API_KEY", hide_env_values = true)]
     pub api_key: String,
 
     /// Output location for individual frames. Default: tmp folder
