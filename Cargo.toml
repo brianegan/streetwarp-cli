@@ -7,7 +7,7 @@ edition = "2024"
 [dependencies]
 gpx = "0.10.0"
 geo = "0.33"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = "0.13"
 futures = "0.3"

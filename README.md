@@ -22,6 +22,40 @@ The minimap uses the [Maps Static API](https://developers.google.com/maps/docume
 
 To **avoid hitting your API quota**, pass in the `--dry-run` option!
 
+### Setting your API key
+
+Pass `--api-key`, or set `STREETWARP_API_KEY` and leave the flag off. Prefer the environment variable: a key on the command line goes into your shell history and is visible in `ps` to anything else running on the machine.
+
+With mise, put it in `mise.local.toml`, which is gitignored:
+
+```toml
+[env]
+STREETWARP_API_KEY = "your-key-here"
+```
+
+`mise trust` once, and the key is set for any command you run in this directory. `--help` shows the variable name but never its value.
+
+### Running without a surprise bill
+
+The API bills per request and nothing here asks before spending, so set your limits at Google's end first. In the Cloud console, restrict the key to just the Street View Static and Maps Static APIs, and set a [quota cap](https://console.cloud.google.com/apis/api/street-view-image-backend.googleapis.com/quotas) and a billing budget alert. That is the only limit that holds if a command goes wrong.
+
+Then work up from cheap:
+
+```bash
+# Free: metadata only, no imagery. Prints the frame count to cost against.
+streetwarp route.gpx --dry-run --json
+
+# A 30 frame taste of the route, about $0.21.
+streetwarp route.gpx --max-frames 30 --minimap overview
+
+# Fewer frames per mile is the other dial, and it costs nothing to try.
+streetwarp route.gpx --frames-per-mile 40
+```
+
+Multiply the `frames` figure from the dry run by $0.007, and add $0.002 per frame again if you use `--minimap follow`. Start with `--minimap overview`, which costs one map request no matter how long the route is.
+
+Two things worth knowing. `--dry-run` still makes metadata requests, which are free but not zero network. And every response is cached, so re-running the same route costs nothing at Google: iterate freely once the first render is paid for.
+
 Every response is cached on disk by default, so re-rendering a route you have already fetched costs nothing. The cache lives in your platform cache directory (`~/Library/Caches/streetwarp` on macOS, `~/.cache/streetwarp` on Linux) and is keyed by request rather than by API key, so rotating a key keeps it. Pass `--no-cache` to fetch everything again.
 
 ### Minimap

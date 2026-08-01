@@ -2186,3 +2186,41 @@ fn a_route_flickering_in_and_out_of_the_window_still_fits_the_url_limit() {
         url.len()
     );
 }
+
+// Reading the key from the environment. Asserted through clap's own metadata
+// rather than by setting a process variable, because tests share one environment
+// and run in parallel.
+
+#[test]
+fn the_api_key_can_come_from_the_environment_instead_of_the_command_line() {
+    use clap::CommandFactory;
+    let command = options::Cli::command();
+    let api_key = command
+        .get_arguments()
+        .find(|arg| arg.get_id() == "api_key")
+        .expect("no api_key argument");
+
+    assert_eq!(
+        api_key.get_env(),
+        Some(std::ffi::OsStr::new("STREETWARP_API_KEY")),
+        "the key must be settable without putting it in shell history"
+    );
+}
+
+#[test]
+fn help_never_prints_the_api_key_it_read_from_the_environment() {
+    // clap prints environment *values* in --help by default, so a key set in the
+    // shell would be echoed to the terminal by a bare `--help`. That is the whole
+    // reason for reading it from the environment in the first place.
+    use clap::CommandFactory;
+    let command = options::Cli::command();
+    let api_key = command
+        .get_arguments()
+        .find(|arg| arg.get_id() == "api_key")
+        .expect("no api_key argument");
+
+    assert!(
+        api_key.is_hide_env_values_set(),
+        "--help would print the api key read from the environment"
+    );
+}

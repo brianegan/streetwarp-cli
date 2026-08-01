@@ -41,3 +41,8 @@
 
 client/node_modules
 client/dist
+
+# Local mise config, which is where the Google API key lives
+mise.local.toml
+.mise.local.toml
+.env
