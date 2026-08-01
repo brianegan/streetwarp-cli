@@ -239,6 +239,33 @@ pub fn clip_to_view(
     runs
 }
 
+/// The request for one follow-mode frame, centred on `here`.
+///
+/// `probe_url` and `minimap_urls` both go through this, so the probe cannot
+/// drift from the request the render later repeats. A drift would cost a wasted
+/// map on every single run, and nothing would surface it.
+fn follow_request(
+    plan: &MinimapPlan,
+    here: LatLng,
+    track: &[LatLng],
+    panorama: &[LatLng],
+    api_key: &str,
+) -> String {
+    // At follow zoom the whole route is mostly off screen, so send only what the
+    // window can show. Downsampling the full route instead would draw a coarse
+    // zigzag through it.
+    let track_runs = clip_to_view(track, here, plan.zoom, plan.size_px);
+    let panorama_runs = clip_to_view(panorama, here, plan.zoom, plan.size_px);
+    build_map_url(&MapRequest {
+        center: here,
+        zoom: plan.zoom,
+        size_px: plan.size_px,
+        track: &as_slices(&track_runs),
+        panorama: &as_slices(&panorama_runs),
+        api_key,
+    })
+}
+
 /// Borrow each run as a slice, for handing to [`MapRequest`].
 fn as_slices(runs: &[Vec<LatLng>]) -> Vec<&[LatLng]> {
     runs.iter().map(|r| r.as_slice()).collect()
@@ -251,12 +278,30 @@ fn as_slices(runs: &[Vec<LatLng>]) -> Vec<&[LatLng]> {
 pub fn build_map_url(request: &MapRequest) -> String {
     let total_points =
         |runs: &[&[LatLng]]| runs.iter().map(|r| r.len()).sum::<usize>().max(1);
-    let render = |budget: usize| {
+    /// Keep the `max` longest runs, back in route order.
+    ///
+    /// Every run costs a path prefix and a two-point minimum that no budget can
+    /// shrink away, so trimming points alone cannot bound a URL when the run
+    /// count is what is large. Dropping the shortest runs costs the least map:
+    /// they are the briefest clips of route across a corner of the window.
+    fn longest_runs<'r>(runs: &[&'r [LatLng]], max: usize) -> Vec<&'r [LatLng]> {
+        if runs.len() <= max {
+            return runs.to_vec();
+        }
+        let mut ranked = runs.iter().copied().enumerate().collect::<Vec<_>>();
+        ranked.sort_unstable_by_key(|(_, run)| std::cmp::Reverse(run.len()));
+        ranked.truncate(max);
+        ranked.sort_unstable_by_key(|(index, _)| *index);
+        ranked.into_iter().map(|(_, run)| run).collect()
+    }
+
+    let render = |budget: usize, max_runs: usize| {
         // The budget is the whole line's, shared out across its runs in
         // proportion to their length, so a route that crosses the window thirty
         // times cannot spend thirty budgets' worth of URL.
-        let path = |runs: &[&[LatLng]], color: &str, weight: u32| {
-            let total = total_points(runs);
+        let path = |all_runs: &[&[LatLng]], color: &str, weight: u32| {
+            let runs = longest_runs(all_runs, max_runs);
+            let total = total_points(&runs);
             runs.iter()
                 .filter(|run| run.len() >= 2)
                 .map(|run| {
@@ -284,14 +329,22 @@ pub fn build_map_url(request: &MapRequest) -> String {
     };
 
     let mut budget = total_points(request.track).max(total_points(request.panorama));
+    let mut max_runs = request.track.len().max(request.panorama.len()).max(1);
     loop {
-        let url = render(budget);
-        // Two points is the shortest thing still worth calling a line, so stop
-        // there rather than looping forever on an impossible budget.
-        if url.len() <= MAX_URL_LEN || budget <= 2 {
+        let url = render(budget, max_runs);
+        if url.len() <= MAX_URL_LEN {
             return url;
         }
-        budget /= 2;
+        // Thin the points first, since that costs only detail. Only once two
+        // points per run is all that is left does dropping runs begin, and one
+        // run of two points is the floor: there is nothing further to give.
+        if budget > 2 {
+            budget /= 2;
+        } else if max_runs > 1 {
+            max_runs /= 2;
+        } else {
+            return url;
+        }
     }
 }
 
@@ -467,21 +520,7 @@ pub fn minimap_urls(
         }
         Mode::Follow => panorama
             .iter()
-            .map(|here| {
-                let track_runs = clip_to_view(track, *here, plan.zoom, plan.size_px);
-                let panorama_runs = clip_to_view(panorama, *here, plan.zoom, plan.size_px);
-                build_map_url(&MapRequest {
-                    center: *here,
-                    zoom: plan.zoom,
-                    size_px: plan.size_px,
-                    // At follow zoom the whole route is mostly off screen, so
-                    // send only what the window can show. Downsampling the full
-                    // route instead would draw a coarse zigzag through it.
-                    track: &as_slices(&track_runs),
-                    panorama: &as_slices(&panorama_runs),
-                    api_key,
-                })
-            })
+            .map(|here| follow_request(plan, *here, track, panorama, api_key))
             .collect(),
     }
 }
@@ -523,19 +562,13 @@ pub fn probe_url(
 ) -> Option<String> {
     match plan.mode {
         Mode::Overview => minimap_urls(plan, track, panorama, api_key).into_iter().next(),
-        Mode::Follow => {
-            let here = *panorama.first()?;
-            let track_runs = clip_to_view(track, here, plan.zoom, plan.size_px);
-            let panorama_runs = clip_to_view(panorama, here, plan.zoom, plan.size_px);
-            Some(build_map_url(&MapRequest {
-                center: here,
-                zoom: plan.zoom,
-                size_px: plan.size_px,
-                track: &as_slices(&track_runs),
-                panorama: &as_slices(&panorama_runs),
-                api_key,
-            }))
-        }
+        Mode::Follow => Some(follow_request(
+            plan,
+            *panorama.first()?,
+            track,
+            panorama,
+            api_key,
+        )),
     }
 }
 

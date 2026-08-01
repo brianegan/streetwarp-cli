@@ -927,6 +927,11 @@ fn percent_encode_survives_googles_worked_example_polyline() {
     assert_eq!(encoded, "_p~iF~ps%7CU_ulLnnqC_mqNvxq%60%40");
 }
 
+/// Borrow each clipped run as a slice, for handing to a `MapRequest`.
+fn borrow_runs(runs: &[Vec<minimap::LatLng>]) -> Vec<&[minimap::LatLng]> {
+    runs.iter().map(|r| r.as_slice()).collect()
+}
+
 /// A route of `n` points wandering north-east, roughly the density of a real
 /// interpolated GPX track.
 fn long_route(n: usize) -> Vec<minimap::LatLng> {
@@ -1026,8 +1031,8 @@ fn map_url_stays_under_the_length_limit_in_follow_mode() {
     let route = long_route(50_000);
     let track = minimap::clip_to_view(&route, centre, 16, 200);
     let panorama = minimap::clip_to_view(&route, centre, 16, 200);
-    let track = track.iter().map(|r| r.as_slice()).collect::<Vec<_>>();
-    let panorama = panorama.iter().map(|r| r.as_slice()).collect::<Vec<_>>();
+    let track = borrow_runs(&track);
+    let panorama = borrow_runs(&panorama);
     let url = minimap::build_map_url(&minimap::MapRequest {
         center: centre,
         zoom: 16,
@@ -1483,10 +1488,11 @@ fn the_filter_graph_composites_even_when_motion_smoothing_is_skipped() {
 /// Render a real video through ffmpeg and read a frame back, which is the only
 /// way to find out whether the filter graph does what its string says.
 ///
-/// Ignored by default so the gate stays fast and does not depend on ffmpeg being
-/// installed. Run with `cargo test -- --ignored`.
+/// ffmpeg is a stated prerequisite of this program, so a machine that cannot
+/// run this test cannot run streetwarp either. It stays in the gate rather than
+/// behind `--ignored` because it is the only check that Task 8's rendered map
+/// really lands in the corner it was asked for.
 #[tokio::test]
-#[ignore = "shells out to ffmpeg; run with --ignored"]
 async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
     let dir = std::env::temp_dir().join("streetwarp-render-corner");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2003,7 +2009,7 @@ fn a_route_that_leaves_the_window_is_drawn_without_a_chord_across_it() {
 
     // Centre the map on the middle of the first pass, where the route is on
     // screen and the excursion is not.
-    let here = urls
+    let url_here = urls
         .iter()
         .enumerate()
         .find(|(i, _)| {
@@ -2016,9 +2022,9 @@ fn a_route_that_leaves_the_window_is_drawn_without_a_chord_across_it() {
     let runs = minimap::clip_to_view(&route, centre, 16, plan.size_px);
     // One path per contiguous run, for each of the two lines drawn.
     assert!(
-        here.matches("path=").count() >= runs.len() * 2,
-        "expected a path per run for both lines, got {} for {} run(s): {here}",
-        here.matches("path=").count(),
+        url_here.matches("path=").count() >= runs.len() * 2,
+        "expected a path per run for both lines, got {} for {} run(s): {url_here}",
+        url_here.matches("path=").count(),
         runs.len()
     );
 }
@@ -2082,4 +2088,41 @@ fn the_probe_asks_for_a_map_the_render_will_ask_for_again() {
 
         assert_eq!(probe, first, "{mode:?} probe diverged from the real request");
     }
+}
+
+#[test]
+fn a_route_lapping_the_window_two_hundred_times_still_fits_the_url_limit() {
+    // Halving the point budget cannot remove a run: each one costs a path
+    // prefix and a two-point minimum no matter how small the budget gets. A
+    // criterium or track session laps the same window enough times to run the
+    // URL past what Google will accept, and an over-length URL is a rejected
+    // request rather than a slightly coarse map.
+    let mut route = Vec::new();
+    for lap in 0..200 {
+        for i in 0..40 {
+            route.push(minimap::LatLng {
+                lat: 51.5 + (lap as f64) * 0.000004,
+                lng: -0.1240 + i as f64 * 0.00015,
+            });
+        }
+    }
+    let plan = minimap::MinimapPlan::resolve(
+        options::MinimapMode::Follow,
+        options::MinimapPosition::Br,
+        30,
+        12,
+        16,
+        640,
+        480,
+    )
+    .unwrap();
+
+    // Checked through the probe, which builds the identical request for frame 0
+    // without clipping the whole route once per frame.
+    let url = minimap::probe_url(&plan, &route, &route, "test-key").unwrap();
+    assert!(
+        url.len() <= minimap::MAX_URL_LEN,
+        "a 200-lap follow url was {} characters",
+        url.len()
+    );
 }
