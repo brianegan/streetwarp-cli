@@ -2,6 +2,8 @@ mod ffmpeg;
 mod optim;
 mod options;
 mod progress;
+#[cfg(test)]
+mod tests;
 
 use std::fs::File;
 use std::io::BufReader;
