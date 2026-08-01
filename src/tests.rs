@@ -2281,20 +2281,14 @@ fn redaction_handles_a_message_carrying_more_than_one_key() {
 // What a real render showed that no synthetic test did.
 
 #[test]
-fn the_dot_never_hangs_over_the_edge_of_the_map() {
-    // Framing the route to touch the image edges puts the first and last dots
-    // half outside it, which is on screen at the start and end of every video.
-    // Asserting the dot's centre is inside is not enough; its radius has to fit
-    // too.
-    // Swept across route sizes rather than tried on one. `fit_zoom` floors the
-    // zoom, so most routes sit well inside the image with slack to spare and a
-    // single hand-picked route says nothing. Only the sizes that land flush
-    // against the fit boundary put a dot on the border, and the sweep is what
-    // finds them.
+fn the_framing_spends_the_whole_map_on_the_route() {
+    // Zoom is an integer, so shrinking the fitted size even slightly can cost a
+    // whole level and halve the scale the route is drawn at. Whatever is done
+    // about the dot overhanging the border, it must not be paid for out of the
+    // zoom.
+    // Swept, because only route sizes near a zoom boundary lose a level, and a
+    // single route almost certainly is not one of them.
     let plan = overview_plan();
-    let image = (plan.size_px * minimap::MAP_SCALE) as f64;
-    let ring = minimap::dot_ring_radius(plan.size_px * minimap::MAP_SCALE);
-
     for millionths in 1..400u32 {
         let step = millionths as f64 * 1e-6;
         let route = (0..50)
@@ -2303,20 +2297,79 @@ fn the_dot_never_hangs_over_the_edge_of_the_map() {
                 lng: -0.12 + (i as f64) * step,
             })
             .collect::<Vec<_>>();
-        let (centre, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
+        let bounds = minimap::BBox::around(&route).unwrap();
+        let (_, zoom) = minimap::overview_framing(&plan, &route, &route).unwrap();
 
-        for point in [route.first().unwrap(), route.last().unwrap()] {
-            let (x, y) = minimap::image_pixel(*point, centre, zoom, plan.size_px);
-            assert!(
-                x - ring >= 0.0 && x + ring <= image,
-                "step {step:.6}: a dot of radius {ring:.1} at x={x:.1} spills outside a {image:.0}px map"
-            );
-            assert!(
-                y - ring >= 0.0 && y + ring <= image,
-                "step {step:.6}: a dot of radius {ring:.1} at y={y:.1} spills outside a {image:.0}px map"
-            );
-        }
+        assert_eq!(
+            zoom,
+            minimap::fit_zoom(bounds, plan.size_px),
+            "step {step:.6}: the framing gave up a zoom level it did not have to, \
+             which halves the size the route is drawn at"
+        );
     }
+}
+
+#[test]
+fn a_dot_at_the_border_is_drawn_whole() {
+    // The route's extremes are exactly where the first and last dots sit, and a
+    // map fitted tight to the route puts them on the border. Rather than zoom
+    // out to make room, the dot is nudged just inside so all of it is drawn.
+    let map = image::RgbaImage::from_pixel(288, 288, image::Rgba([200, 200, 200, 255]));
+    let count = |stamped: &image::RgbaImage| {
+        stamped
+            .pixels()
+            .zip(map.pixels())
+            .filter(|(a, b)| a != b)
+            .count()
+    };
+
+    let middle = count(&minimap::stamp_dot(&map, 144.0, 144.0));
+    assert!(middle > 0, "nothing was drawn in the middle of the map");
+
+    for (x, y) in [(0.0, 144.0), (288.0, 144.0), (144.0, 0.0), (0.0, 0.0)] {
+        let at_edge = count(&minimap::stamp_dot(&map, x, y));
+        // Rasterising a circle at a different sub-pixel offset moves the count
+        // by a pixel or so. Truncation at a border loses about half the dot, so
+        // the two are never close to being confused.
+        assert!(
+            at_edge * 100 >= middle * 95,
+            "a dot at ({x}, {y}) drew {at_edge} pixels against {middle} in the middle, \
+             so it was cut off by the edge rather than drawn whole"
+        );
+    }
+}
+
+#[test]
+fn nudging_the_dot_inside_moves_it_no_further_than_it_has_to() {
+    // The nudge lies about the position slightly, so it must be small: at most
+    // the dot's own radius, and only for points on the border.
+    let map = image::RgbaImage::from_pixel(288, 288, image::Rgba([200, 200, 200, 255]));
+    let ring = minimap::dot_ring_radius(288);
+    let centre_of_drawn = |stamped: &image::RgbaImage| {
+        let pts = stamped
+            .enumerate_pixels()
+            .zip(map.pixels())
+            .filter(|((.., a), b)| a != b)
+            .map(|((x, y, _), _)| (x as f64, y as f64))
+            .collect::<Vec<_>>();
+        let n = pts.len() as f64;
+        (
+            pts.iter().map(|p| p.0).sum::<f64>() / n,
+            pts.iter().map(|p| p.1).sum::<f64>() / n,
+        )
+    };
+
+    // Well inside: not moved at all.
+    let (x, y) = centre_of_drawn(&minimap::stamp_dot(&map, 100.0, 120.0));
+    close(x, 100.0, 1.0);
+    close(y, 120.0, 1.0);
+
+    // On the border: moved in by the ring and no more.
+    let (x, _) = centre_of_drawn(&minimap::stamp_dot(&map, 0.0, 144.0));
+    assert!(
+        x <= ring + 1.0,
+        "the dot was pushed {x:.1} in when {ring:.1} would do"
+    );
 }
 
 #[test]

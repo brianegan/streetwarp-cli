@@ -450,6 +450,14 @@ pub fn stamp_dot(map: &image::RgbaImage, x: f64, y: f64) -> image::RgbaImage {
     let ring = dot_ring_radius(width.min(height));
     let radius = ring / 1.4;
 
+    // The map is fitted tight to the route, so the first and last positions land
+    // on the border and half the dot would fall outside. Nudge it just inside
+    // instead. That misplaces it by at most the dot's own radius, and only at
+    // the very ends of a route, which is a better trade than zooming out far
+    // enough to make room.
+    let x = x.clamp(ring, (width as f64 - 1.0 - ring).max(ring));
+    let y = y.clamp(ring, (height as f64 - 1.0 - ring).max(ring));
+
     let left = (x - ring).floor().max(0.0) as u32;
     let top = (y - ring).floor().max(0.0) as u32;
     let right = ((x + ring).ceil().max(0.0) as u32).min(width.saturating_sub(1));
@@ -498,11 +506,12 @@ pub fn overview_framing(
     // fitting against the doubled figure would choose a zoom one level too deep
     // and run the route off the edges of the map.
     //
-    // Inset by the dot, because the route's extremes are exactly where the first
-    // and last dots sit and a flush fit leaves them hanging over the border.
-    let inset = (dot_ring_radius(plan.size_px * MAP_SCALE) / MAP_SCALE as f64).ceil() as u32;
-    let usable = plan.size_px.saturating_sub(inset * 2).max(1);
-    Some((bounds.center(), fit_zoom(bounds, usable)))
+    // Fitted to the whole map, not to the map less room for the dot. Zoom is an
+    // integer, so holding back even a few pixels can cost a whole level and draw
+    // the route at half the size. The dot is kept inside by nudging it in
+    // `stamp_dot` instead, which costs a few pixels of position rather than half
+    // the map.
+    Some((bounds.center(), fit_zoom(bounds, plan.size_px)))
 }
 
 /// Where a coordinate lands within the fetched map image, in image pixels.
