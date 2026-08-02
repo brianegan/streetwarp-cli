@@ -89,7 +89,7 @@ It draws two lines: your GPX track in blue, and the path the video actually foll
 | --- | --- | --- | --- |
 | `--minimap` | `off`, `overview`, `follow` | `off` | `overview` holds the whole route still and moves a dot along it. `follow` stays centred on you and pans. |
 | `--minimap-position` | `tl`, `tr`, `bl`, `br` | `br` | Which corner it sits in. |
-| `--minimap-size` | 1 to 100 | `30` | Percent of the video's shorter side. |
+| `--minimap-size` | 1 to 100 | `40` | Percent of the video's shorter side. Zoom steps in powers of two, so the map only sharpens when its pixels double: 40 and 80 are the sizes that buy a level, and values between them are just a bigger picture of the same map. |
 | `--minimap-margin` | pixels | `12` | Gap between the minimap and the frame edge. |
 | `--minimap-zoom` | 0 to 21 | `16` | Zoom level, follow mode only. |
 

@@ -104,8 +104,13 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = MinimapPosition::Br)]
     pub minimap_position: MinimapPosition,
 
-    /// Minimap size as a percent of the video's shorter side, default: 30.
-    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=100))]
+    /// Minimap size as a percent of the video's shorter side, default: 40.
+    ///
+    /// Zoom steps in powers of two, so the map only gains detail when its pixel
+    /// count doubles. 40 is the smallest size that reaches the deeper zoom on a
+    /// typical day ride; 30 left some routes a whole level coarser depending on
+    /// which side of the boundary their bounding box fell.
+    #[arg(long, default_value_t = 40, value_parser = clap::value_parser!(u32).range(1..=100))]
     pub minimap_size: u32,
 
     /// Gap between the minimap and the edge of the video in pixels, default: 12.

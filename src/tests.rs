@@ -373,7 +373,7 @@ fn minimap_is_off_by_default_with_the_documented_defaults_beside_it() {
     let cli = parse_cli(&[]).expect("bare command line should parse");
     assert_eq!(cli.minimap, options::MinimapMode::Off);
     assert_eq!(cli.minimap_position, options::MinimapPosition::Br);
-    assert_eq!(cli.minimap_size, 30);
+    assert_eq!(cli.minimap_size, 40);
     assert_eq!(cli.minimap_margin, 12);
     assert_eq!(cli.minimap_zoom, 16);
 }
