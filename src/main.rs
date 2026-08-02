@@ -1,4 +1,5 @@
 mod cache;
+mod coverage;
 mod fetch;
 mod ffmpeg;
 mod minimap;
@@ -274,6 +275,49 @@ fn route_lines(result: &MetadataResult) -> (Vec<minimap::LatLng>, Vec<minimap::L
             .map(|p| as_latlng(p.lat, p.lng))
             .collect(),
     )
+}
+
+/// Warn about the places the video will jump.
+///
+/// Printed to stderr so it survives `--json`, and printed during `--dry-run`
+/// too, which is the whole point: the gaps are visible before any frame is paid
+/// for.
+fn warn_about_coverage_gaps(metadata_result: &MetadataResult) {
+    let points = metadata_result
+        .gps_points
+        .iter()
+        .map(|p| (p.lat, p.lng))
+        .collect::<Vec<_>>();
+    let gaps = coverage::find_gaps(&points);
+    if gaps.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "\nwarning: the video jumps {} time{} where Street View has no coverage.",
+        gaps.len(),
+        if gaps.len() == 1 { "" } else { "s" }
+    );
+    for gap in &gaps {
+        let over = if gap.spans > 1 {
+            format!(" over {} frames", gap.spans)
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "  {:>6.1}s  skips {:>5.0} m{}  https://www.google.com/maps/@{:.6},{:.6},17z",
+            gap.seconds(SOURCE_FPS as f64),
+            gap.metres,
+            over,
+            gap.from.0,
+            gap.from.1
+        );
+    }
+    eprintln!(
+        "Google has not driven these stretches: a farm track, a private road, or a\n\
+crossing your routing app believes in that is not there. Check them before\n\
+trusting the route.\n"
+    );
 }
 
 /// Fetch everything a render pulls from Google, minimaps first.
@@ -672,6 +716,7 @@ async fn main() {
         progress_stage("Parsing metadata");
         let metadata_result: MetadataResult =
             serde_json::from_reader(reader).expect("Could not parse submitted metadata result");
+        warn_about_coverage_gaps(&metadata_result);
         create_video(&fetching, output_dir, metadata_result).await;
         return;
     }
@@ -743,6 +788,7 @@ async fn main() {
         name: read_result.name.unwrap_or("Unnamed GPX File".to_owned()),
         file_size_bytes: read_result.size,
     };
+    warn_about_coverage_gaps(&metadata_result);
     if CLI_OPTIONS.dry_run {
         if CLI_OPTIONS.json {
             println!(

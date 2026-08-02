@@ -10,6 +10,12 @@ use crate::progress::progress;
 pub const VIDEO_WIDTH: u32 = 640;
 pub const VIDEO_HEIGHT: u32 = 480;
 
+/// Frames per second the Street View sequence is encoded at.
+///
+/// Motion interpolation raises the output rate but leaves the duration alone, so
+/// this is what turns a frame index into a timestamp a viewer can scrub to.
+pub const SOURCE_FPS: u32 = 24;
+
 /// How the final pass smooths motion between Street View frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
@@ -111,12 +117,13 @@ pub async fn create_timelapse<P: AsRef<Path>>(image_dir: P, num_images: usize, o
         "%d.jpg"
     };
     let size = format!("{VIDEO_WIDTH}x{VIDEO_HEIGHT}");
+    let fps = SOURCE_FPS.to_string();
     ffmpeg(
         image_dir,
         &(move |frame| 100.0 * (frame as f64) / (num_images as f64)),
         &[
             "-framerate",
-            "24",
+            &fps,
             "-pattern_type",
             "sequence",
             "-i",
@@ -161,7 +168,8 @@ pub async fn finish_timelapse<P: AsRef<Path>>(
         // with Street View frame N. Interpolation raises the output rate past
         // this, and overlay holds each map frame across the gap.
         args.extend(
-            ["-framerate", "24", "-pattern_type", "sequence", "-start_number", "0", "-i"]
+            ["-framerate", &SOURCE_FPS.to_string(), "-pattern_type", "sequence", "-start_number",
+             "0", "-i"]
                 .map(String::from),
         );
         args.push(crate::minimap::frame_pattern());

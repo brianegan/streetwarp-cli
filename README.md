@@ -59,6 +59,23 @@ Worth knowing: `--dry-run` is free but not zero network, since it still makes me
 
 Every response is cached on disk by default, so re-rendering a route you have already fetched costs nothing and you can iterate on the minimap freely once the first render is paid for. The cache lives in your platform cache directory (`~/Library/Caches/streetwarp` on macOS, `~/.cache/streetwarp` on Linux) and is keyed by request rather than by API key, so rotating a key keeps it. Pass `--no-cache` to fetch everything again.
 
+### Spotting where a route goes wrong
+
+Google returns no panorama for a road it has never driven: a farm track, a private lane, or a crossing your routing app believes in that is not there. Those samples are dropped and the video splices straight across, so a kilometre of route can vanish in a single frame.
+
+Nothing in the summary numbers says so. The average snap error only measures points that survived, so a missing kilometre leaves it untouched. A route with a river crossing that does not exist reported 3.5 m against a clean route's 3.1 m.
+
+Every run prints the jumps it found, including `--dry-run`, so you see them before paying for a single frame:
+
+```
+warning: the video jumps 5 times where Street View has no coverage.
+     1.3s  skips   351 m  https://www.google.com/maps/@54.311443,-2.673245,17z
+    20.7s  skips  1062 m  https://www.google.com/maps/@54.290168,-2.585234,17z
+    54.2s  skips  1037 m  https://www.google.com/maps/@54.229613,-2.608015,17z
+```
+
+The timestamps are where to scrub to in the finished video, and the links are where to look on the map. A jump counts when a step is more than ten times the route's own usual frame spacing, so it adapts to `--frames-per-mile` rather than assuming a distance. Where coverage is merely thin rather than absent, several frames in a row each jump a little, and those are reported together as one stretch to check.
+
 ### Minimap
 Draw a small map over the video showing where each frame sits on the route, so you can see at a glance whether the render wandered off your track.
 

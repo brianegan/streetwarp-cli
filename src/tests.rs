@@ -2426,3 +2426,100 @@ fn the_planned_track_is_drawn_thicker_than_the_path_actually_followed() {
         weights[1]
     );
 }
+
+// Warning about the places a render jumps. A route that crosses a river a
+// routing app believes is bridged produces no panoramas there, so the frames
+// vanish and the video splices across. Nothing in the summary numbers shows it.
+
+/// A run of points spaced `metres` apart, heading north from a fixed start.
+fn spaced_points(count: usize, metres: f64) -> Vec<(f64, f64)> {
+    let step = metres / 111_320.0; // degrees of latitude per metre
+    (0..count).map(|i| (54.0 + i as f64 * step, -2.6)).collect()
+}
+
+#[test]
+fn an_evenly_walked_route_has_no_gaps() {
+    assert!(coverage::find_gaps(&spaced_points(200, 16.0)).is_empty());
+}
+
+#[test]
+fn a_missing_stretch_is_reported_with_where_and_how_far() {
+    let mut points = spaced_points(100, 16.0);
+    // A kilometre of route with no coverage: the frames either side survive,
+    // everything between them was dropped.
+    let after = *points.last().unwrap();
+    let jumped = (after.0 + 1000.0 / 111_320.0, after.1);
+    points.push(jumped);
+    points.extend(
+        spaced_points(50, 16.0)
+            .iter()
+            .map(|p| (jumped.0 + (p.0 - 54.0), p.1)),
+    );
+
+    let gaps = coverage::find_gaps(&points);
+
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].frame, 100, "the jump lands on the frame after the gap");
+    close(gaps[0].metres, 1000.0, 2.0);
+    close(gaps[0].from.0, after.0, 1e-9);
+    close(gaps[0].to.0, jumped.0, 1e-9);
+}
+
+#[test]
+fn the_threshold_follows_the_route_rather_than_a_fixed_distance() {
+    // A route sampled every 200 metres is not 200 metres of gap at every step.
+    assert!(coverage::find_gaps(&spaced_points(200, 200.0)).is_empty());
+}
+
+#[test]
+fn a_small_stutter_on_a_densely_sampled_route_is_not_a_gap() {
+    // Ten times a 2 metre spacing is 20 metres, which is not a missing road.
+    let mut points = spaced_points(100, 2.0);
+    let after = *points.last().unwrap();
+    points.push((after.0 + 30.0 / 111_320.0, after.1));
+    assert!(coverage::find_gaps(&points).is_empty(), "30 m is not a gap");
+}
+
+#[test]
+fn a_gap_reports_when_it_happens_in_the_video() {
+    let gap = coverage::Gap {
+        frame: 497,
+        metres: 1060.0,
+        spans: 1,
+        from: (54.29, -2.58),
+        to: (54.28, -2.57),
+    };
+    close(gap.seconds(24.0), 20.708_333, 1e-5);
+}
+
+#[test]
+fn too_few_points_to_have_a_usual_spacing_reports_nothing() {
+    assert!(coverage::find_gaps(&[]).is_empty());
+    assert!(coverage::find_gaps(&[(54.0, -2.6)]).is_empty());
+}
+
+#[test]
+fn a_run_of_thin_coverage_is_reported_as_one_place_to_check() {
+    // Where Google's coverage is sparse rather than absent, several frames in a
+    // row each jump a couple of hundred metres. That is one jumpy stretch of
+    // road to go and look at, not four separate findings.
+    let mut points = spaced_points(60, 16.0);
+    let mut here = *points.last().unwrap();
+    for _ in 0..3 {
+        here = (here.0 + 200.0 / 111_320.0, here.1);
+        points.push(here);
+    }
+    points.extend(
+        spaced_points(40, 16.0)
+            .iter()
+            .map(|p| (here.0 + (p.0 - 54.0), p.1)),
+    );
+
+    let gaps = coverage::find_gaps(&points);
+
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].frame, 60, "reported where the jumpiness starts");
+    close(gaps[0].metres, 600.0, 5.0);
+    close(gaps[0].from.0, 54.0 + 59.0 * 16.0 / 111_320.0, 1e-6);
+    close(gaps[0].to.0, here.0, 1e-9);
+}
