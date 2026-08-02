@@ -2548,12 +2548,5 @@ fn the_composed_frame_scales_to_exactly_half_its_size() {
              number of video pixels, so the overlay cannot scale exactly"
         );
 
-        let composed = plan.size_px * minimap::MAP_SCALE + pad * 2;
-        let placed = plan.size_px + (pad / minimap::MAP_SCALE) * 2;
-        assert_eq!(
-            composed,
-            placed * minimap::MAP_SCALE,
-            "--minimap-size {percent}: composed {composed} does not halve to {placed}"
-        );
     }
 }

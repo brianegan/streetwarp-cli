@@ -279,9 +279,10 @@ fn route_lines(result: &MetadataResult) -> (Vec<minimap::LatLng>, Vec<minimap::L
 
 /// Warn about the places the video will jump.
 ///
-/// Printed to stderr so it survives `--json`, and printed during `--dry-run`
-/// too, which is the whole point: the gaps are visible before any frame is paid
-/// for.
+/// Printed to stderr so it survives `--json`. On a render this runs once the
+/// frame list is final, so the timestamps name the video that gets written, and
+/// by then the frames are paid for. The `--dry-run` path reports the same gaps
+/// for nothing, which is where to look before spending.
 fn warn_about_coverage_gaps(metadata_result: &MetadataResult) {
     let points = metadata_result
         .gps_points

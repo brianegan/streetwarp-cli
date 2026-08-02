@@ -450,7 +450,6 @@ pub fn stamp_dot(canvas: &image::RgbaImage, x: f64, y: f64, ring: f64) -> image:
     // here drew a dot fractionally wider than the padding it had to fit in.
     let radius = ring / 1.4;
 
-
     let left = (x - ring).floor().max(0.0) as u32;
     let top = (y - ring).floor().max(0.0) as u32;
     let right = ((x + ring).ceil().max(0.0) as u32).min(width.saturating_sub(1));
@@ -533,9 +532,9 @@ pub fn overview_framing(
     //
     // Fitted to the whole map, not to the map less room for the dot. Zoom is an
     // integer, so holding back even a few pixels can cost a whole level and draw
-    // the route at half the size. The dot is kept inside by nudging it in
-    // `stamp_dot` instead, which costs a few pixels of position rather than half
-    // the map.
+    // the route at half the size. Room for the dot comes from `compose_frame`
+    // padding the canvas instead, which lets it overhang onto the video at its
+    // true position rather than being moved or the map being shrunk.
     Some((bounds.center(), fit_zoom(bounds, plan.size_px)))
 }
 
