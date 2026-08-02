@@ -47,8 +47,8 @@ gate:
   # it stops and hands the stream back. 0 never autofixes. Default: 3.
   max_fix_attempts: 10
   steps:
-    - name: test
-      run: cargo test
     - name: review
       skill: code-review
       model: fable
+    - name: test
+      run: cargo test
