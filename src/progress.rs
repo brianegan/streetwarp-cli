@@ -5,9 +5,7 @@ use crate::options::CLI_OPTIONS;
 
 const PROGRESS_DEBOUNCE_MS: u128 = 200;
 
-lazy_static! {
-    static ref LAST_PROGRESS_TIME: Mutex<u128> = Mutex::new(0);
-}
+static LAST_PROGRESS_TIME: Mutex<u128> = Mutex::new(0);
 
 pub fn progress(msg: &str) {
     if !CLI_OPTIONS.progress {
