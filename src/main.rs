@@ -584,6 +584,11 @@ async fn create_video<F: Fetch>(
         metadata_result.gps_points.len()
     };
 
+    // Reported here, after `--offset-frames`, `--max-frames` and the optimizer
+    // have each had their turn at the frame list. Anywhere earlier and the
+    // timestamps name a moment in a video that was never rendered.
+    warn_about_coverage_gaps(&metadata_result);
+
     if CLI_OPTIONS.print_metadata {
         if CLI_OPTIONS.json {
             println!(
@@ -716,7 +721,6 @@ async fn main() {
         progress_stage("Parsing metadata");
         let metadata_result: MetadataResult =
             serde_json::from_reader(reader).expect("Could not parse submitted metadata result");
-        warn_about_coverage_gaps(&metadata_result);
         create_video(&fetching, output_dir, metadata_result).await;
         return;
     }
@@ -788,8 +792,10 @@ async fn main() {
         name: read_result.name.unwrap_or("Unnamed GPX File".to_owned()),
         file_size_bytes: read_result.size,
     };
-    warn_about_coverage_gaps(&metadata_result);
     if CLI_OPTIONS.dry_run {
+        // Reported here for a dry run because nothing trims the list on this
+        // path. A real render reports its own, after the trimming.
+        warn_about_coverage_gaps(&metadata_result);
         if CLI_OPTIONS.json {
             println!(
                 "{}",

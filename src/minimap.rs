@@ -474,7 +474,12 @@ pub fn stamp_dot(canvas: &image::RgbaImage, x: f64, y: f64, ring: f64) -> image:
 /// Wide enough for a dot centred on the map's very edge, which is where the
 /// first and last positions of a route sit.
 pub fn dot_pad(image_size_px: u32) -> u32 {
-    dot_ring_radius(image_size_px).ceil() as u32
+    let ring = dot_ring_radius(image_size_px).ceil() as u32;
+    // Rounded up to a whole number of video pixels. ffmpeg scales the composed
+    // frame down by `MAP_SCALE` to place it, and an odd padding makes that
+    // division inexact, which renders the map a pixel small and slightly off the
+    // corner it was given.
+    ring.div_ceil(MAP_SCALE) * MAP_SCALE
 }
 
 /// Compose one minimap frame: the fetched map with the position dot at its true

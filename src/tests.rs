@@ -2523,3 +2523,37 @@ fn a_run_of_thin_coverage_is_reported_as_one_place_to_check() {
     close(gaps[0].from.0, 54.0 + 59.0 * 16.0 / 111_320.0, 1e-6);
     close(gaps[0].to.0, here.0, 1e-9);
 }
+
+#[test]
+fn the_composed_frame_scales_to_exactly_half_its_size() {
+    // ffmpeg scales the composed frame down by MAP_SCALE to place it. If the
+    // padding is an odd number of map pixels that division is not exact, and the
+    // map renders a pixel small and slightly off the corner it was given.
+    for percent in 1..=100u32 {
+        let plan = minimap::MinimapPlan::resolve(
+            options::MinimapMode::Overview,
+            options::MinimapPosition::Br,
+            percent,
+            12,
+            16,
+            640,
+            480,
+        )
+        .unwrap();
+        let pad = minimap::dot_pad(plan.size_px * minimap::MAP_SCALE);
+        assert_eq!(
+            pad % minimap::MAP_SCALE,
+            0,
+            "--minimap-size {percent}: padding of {pad} map pixels is not a whole \
+             number of video pixels, so the overlay cannot scale exactly"
+        );
+
+        let composed = plan.size_px * minimap::MAP_SCALE + pad * 2;
+        let placed = plan.size_px + (pad / minimap::MAP_SCALE) * 2;
+        assert_eq!(
+            composed,
+            placed * minimap::MAP_SCALE,
+            "--minimap-size {percent}: composed {composed} does not halve to {placed}"
+        );
+    }
+}
