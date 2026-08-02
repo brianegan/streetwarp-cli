@@ -276,8 +276,7 @@ fn as_slices(runs: &[Vec<LatLng>]) -> Vec<&[LatLng]> {
 /// Both routes ride in the same request, downsampled as far as needed to stay
 /// under [`MAX_URL_LEN`].
 pub fn build_map_url(request: &MapRequest) -> String {
-    let total_points =
-        |runs: &[&[LatLng]]| runs.iter().map(|r| r.len()).sum::<usize>().max(1);
+    let total_points = |runs: &[&[LatLng]]| runs.iter().map(|r| r.len()).sum::<usize>().max(1);
     /// Keep the `max` longest runs, back in route order.
     ///
     /// Every run costs a path prefix and a two-point minimum that no budget can
@@ -316,11 +315,7 @@ pub fn build_map_url(request: &MapRequest) -> String {
         };
         let mut url = format!(
             "https://maps.googleapis.com/maps/api/staticmap?center={},{}&zoom={}&size={}x{}&scale={MAP_SCALE}&maptype=roadmap",
-            request.center.lat,
-            request.center.lng,
-            request.zoom,
-            request.size_px,
-            request.size_px
+            request.center.lat, request.center.lng, request.zoom, request.size_px, request.size_px
         );
         url.push_str(&path(request.track, TRACK_COLOR, 5));
         url.push_str(&path(request.panorama, PANORAMA_COLOR, 2));
@@ -367,7 +362,9 @@ pub fn map_failure_message(error: &crate::fetch::FetchError) -> String {
         );
     }
     // The request URL is deliberately never quoted here: it carries the API key.
-    message.push_str(&format!("\nEnable the Maps Static API at {MAPS_STATIC_ENABLE_URL}"));
+    message.push_str(&format!(
+        "\nEnable the Maps Static API at {MAPS_STATIC_ENABLE_URL}"
+    ));
     message
 }
 
@@ -609,7 +606,9 @@ pub fn probe_url(
     api_key: &str,
 ) -> Option<String> {
     match plan.mode {
-        Mode::Overview => minimap_urls(plan, track, panorama, api_key).into_iter().next(),
+        Mode::Overview => minimap_urls(plan, track, panorama, api_key)
+            .into_iter()
+            .next(),
         Mode::Follow => Some(follow_request(
             plan,
             *panorama.first()?,
@@ -682,7 +681,10 @@ pub fn render_frames<P: AsRef<std::path::Path>>(
                 // Follow mode centres each map on the rider, so the dot is
                 // always the middle of its own image.
                 let middle = map.width() as f64 / 2.0;
-                write(&compose_frame(&map, middle, map.height() as f64 / 2.0), index)?;
+                write(
+                    &compose_frame(&map, middle, map.height() as f64 / 2.0),
+                    index,
+                )?;
             }
             Ok(maps.len())
         }

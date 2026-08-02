@@ -168,9 +168,16 @@ pub async fn finish_timelapse<P: AsRef<Path>>(
         // with Street View frame N. Interpolation raises the output rate past
         // this, and overlay holds each map frame across the gap.
         args.extend(
-            ["-framerate", &SOURCE_FPS.to_string(), "-pattern_type", "sequence", "-start_number",
-             "0", "-i"]
-                .map(String::from),
+            [
+                "-framerate",
+                &SOURCE_FPS.to_string(),
+                "-pattern_type",
+                "sequence",
+                "-start_number",
+                "0",
+                "-i",
+            ]
+            .map(String::from),
         );
         args.push(crate::minimap::frame_pattern());
     }

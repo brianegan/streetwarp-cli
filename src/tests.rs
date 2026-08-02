@@ -442,7 +442,8 @@ fn fnv1a_64_matches_the_published_reference_vectors() {
 
 #[test]
 fn cache_key_ignores_the_api_key_so_rotating_one_keeps_the_cache() {
-    let with_one = "https://maps.googleapis.com/maps/api/streetview?size=640x480&location=1,2&key=AAA";
+    let with_one =
+        "https://maps.googleapis.com/maps/api/streetview?size=640x480&location=1,2&key=AAA";
     let with_another =
         "https://maps.googleapis.com/maps/api/streetview?size=640x480&location=1,2&key=BBB";
     assert_eq!(
@@ -556,7 +557,11 @@ fn cache_hit_survives_the_api_key_changing_between_runs() {
     let scratch = ScratchCache::named("key-rotation");
     let cache = scratch.cache();
     let stored = b"map bytes";
-    cache.put(cache::Kind::Map, "https://example.com/m?z=1&key=OLD", stored);
+    cache.put(
+        cache::Kind::Map,
+        "https://example.com/m?z=1&key=OLD",
+        stored,
+    );
     assert_eq!(
         cache
             .get(cache::Kind::Map, "https://example.com/m?z=1&key=NEW")
@@ -837,7 +842,11 @@ fn decode_polyline(encoded: &str) -> Vec<minimap::LatLng> {
                     break;
                 }
             }
-            if result & 1 != 0 { !(result >> 1) } else { result >> 1 }
+            if result & 1 != 0 {
+                !(result >> 1)
+            } else {
+                result >> 1
+            }
         };
         lat += next_value();
         lng += next_value();
@@ -1069,7 +1078,6 @@ fn clip_to_view_drops_the_far_end_of_the_route_but_keeps_what_is_on_screen() {
     );
 }
 
-
 // Failing before the money is spent. The likeliest reason a minimap request is
 // refused is that the Maps Static API was never switched on for the key, which
 // a Street View key does not carry.
@@ -1179,7 +1187,10 @@ fn small_metadata_result() -> MetadataResult {
     MetadataResult {
         distance: 1000.0,
         frames: points.len(),
-        gps_points: points.iter().map(SerializablePointBearing::from_geo).collect(),
+        gps_points: points
+            .iter()
+            .map(SerializablePointBearing::from_geo)
+            .collect(),
         original_points: points.iter().map(|pb| pb.point).collect(),
         average_error: 0.0,
         name: "Test Route".to_string(),
@@ -1247,7 +1258,11 @@ async fn a_working_minimap_lets_the_street_view_frames_be_fetched() {
     let calls = fetcher.calls();
     let first_streetview = calls.iter().position(|u| u.contains("/streetview"));
     let first_map = calls.iter().position(|u| u.contains("staticmap"));
-    assert_eq!(first_map, Some(0), "the map must be fetched first: {calls:?}");
+    assert_eq!(
+        first_map,
+        Some(0),
+        "the map must be fetched first: {calls:?}"
+    );
     assert!(
         first_streetview.unwrap() > first_map.unwrap(),
         "frames must come after the map: {calls:?}"
@@ -1422,10 +1437,7 @@ fn a_minimap_too_big_for_its_margin_is_still_placed_inside_the_frame() {
         options::MinimapPosition::Bl,
         options::MinimapPosition::Br,
     ] {
-        let plan = minimap::MinimapPlan {
-            position,
-            ..plan
-        };
+        let plan = minimap::MinimapPlan { position, ..plan };
         let (x, y) = minimap::overlay_offsets(&plan, 640, 480);
         assert!(
             x + plan.size_px <= 640,
@@ -1511,7 +1523,9 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
             image::RgbaImage::from_pixel(across + pad * 2, across + pad * 2, image::Rgba([0u8; 4]));
         let map = image::RgbaImage::from_pixel(across, across, image::Rgba([255u8, 0, 255, 255]));
         image::imageops::replace(&mut canvas, &map, pad as i64, pad as i64);
-        canvas.save(dir.join(minimap::frame_filename(index))).unwrap();
+        canvas
+            .save(dir.join(minimap::frame_filename(index)))
+            .unwrap();
     }
 
     let (map_x, map_y) = minimap::overlay_offsets(&plan, 640, 480);
@@ -1522,8 +1536,16 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
         &dir,
         &(|_| 0.0),
         &[
-            "-f", "lavfi", "-i", "color=c=black:s=640x480:r=24", "-frames:v", "6", "-pix_fmt",
-            "yuv420p", "-y", "original.mp4",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=640x480:r=24",
+            "-frames:v",
+            "6",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+            "original.mp4",
         ],
     )
     .await;
@@ -1582,8 +1604,8 @@ async fn a_rendered_video_shows_the_minimap_in_the_requested_corner() {
 #[tokio::test]
 #[ignore = "needs a real Google API key; run with --ignored"]
 async fn google_serves_the_overview_map_this_program_asks_for() {
-    let api_key = std::env::var("GOOGLE_API_KEY")
-        .expect("set GOOGLE_API_KEY to run the live minimap test");
+    let api_key =
+        std::env::var("GOOGLE_API_KEY").expect("set GOOGLE_API_KEY to run the live minimap test");
     let plan = overview_plan();
     let route = (0..50)
         .map(|i| minimap::LatLng {
@@ -1911,7 +1933,11 @@ async fn minimaps_are_fetched_and_drawn_from_the_same_frame_list() {
         .await
         .expect("drawing minimaps should succeed");
 
-    assert_eq!(drawn, result.gps_points.len(), "one minimap per video frame");
+    assert_eq!(
+        drawn,
+        result.gps_points.len(),
+        "one minimap per video frame"
+    );
     assert_eq!(
         fetcher.calls().len(),
         result.gps_points.len(),
@@ -2089,16 +2115,9 @@ fn the_probe_asks_for_a_map_the_render_will_ask_for_again() {
     // cache answers. A probe that asked for something slightly different would
     // cost a wasted map on every single run.
     for mode in [options::MinimapMode::Overview, options::MinimapMode::Follow] {
-        let plan = minimap::MinimapPlan::resolve(
-            mode,
-            options::MinimapPosition::Br,
-            30,
-            12,
-            16,
-            640,
-            480,
-        )
-        .unwrap();
+        let plan =
+            minimap::MinimapPlan::resolve(mode, options::MinimapPosition::Br, 30, 12, 16, 640, 480)
+                .unwrap();
         let (_, route) = route_that_leaves_and_returns();
 
         let probe = minimap::probe_url(&plan, &route, &route, "test-key").unwrap();
@@ -2107,7 +2126,10 @@ fn the_probe_asks_for_a_map_the_render_will_ask_for_again() {
             .next()
             .unwrap();
 
-        assert_eq!(probe, first, "{mode:?} probe diverged from the real request");
+        assert_eq!(
+            probe, first,
+            "{mode:?} probe diverged from the real request"
+        );
     }
 }
 
@@ -2287,8 +2309,14 @@ fn redaction_removes_a_key_wherever_it_appears_in_a_message() {
 #[test]
 fn redaction_leaves_alone_what_only_looks_like_a_key() {
     assert_eq!(cache::redact_api_key("monkey=1"), "monkey=1");
-    assert_eq!(cache::redact_api_key("?monkey=1&okey=2"), "?monkey=1&okey=2");
-    assert_eq!(cache::redact_api_key("no parameters here"), "no parameters here");
+    assert_eq!(
+        cache::redact_api_key("?monkey=1&okey=2"),
+        "?monkey=1&okey=2"
+    );
+    assert_eq!(
+        cache::redact_api_key("no parameters here"),
+        "no parameters here"
+    );
 }
 
 #[test]
@@ -2379,7 +2407,11 @@ fn the_padding_around_the_map_is_transparent() {
     let pad = minimap::dot_pad(288);
 
     assert_eq!(frame.dimensions(), (288 + pad * 2, 288 + pad * 2));
-    assert_eq!(frame.get_pixel(0, 0).0[3], 0, "the corner should be see-through");
+    assert_eq!(
+        frame.get_pixel(0, 0).0[3],
+        0,
+        "the corner should be see-through"
+    );
     assert_eq!(
         frame.get_pixel(pad, pad),
         map.get_pixel(0, 0),
@@ -2414,7 +2446,12 @@ fn the_planned_track_is_drawn_thicker_than_the_path_actually_followed() {
         .skip(1)
         .filter_map(|p| {
             let at = p.find("weight%3A")? + "weight%3A".len();
-            p[at..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().ok()
+            p[at..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+                .ok()
         })
         .collect::<Vec<_>>();
 
@@ -2459,7 +2496,10 @@ fn a_missing_stretch_is_reported_with_where_and_how_far() {
     let gaps = coverage::find_gaps(&points);
 
     assert_eq!(gaps.len(), 1, "{gaps:?}");
-    assert_eq!(gaps[0].frame, 100, "the jump lands on the frame after the gap");
+    assert_eq!(
+        gaps[0].frame, 100,
+        "the jump lands on the frame after the gap"
+    );
     close(gaps[0].metres, 1000.0, 2.0);
     close(gaps[0].from.0, after.0, 1e-9);
     close(gaps[0].to.0, jumped.0, 1e-9);
@@ -2547,6 +2587,5 @@ fn the_composed_frame_scales_to_exactly_half_its_size() {
             "--minimap-size {percent}: padding of {pad} map pixels is not a whole \
              number of video pixels, so the overlay cannot scale exactly"
         );
-
     }
 }

@@ -62,8 +62,8 @@ pub fn redact_api_key(text: &str) -> String {
     while let Some(at) = rest.find("key=") {
         let (before, from_key) = rest.split_at(at);
         // Only a parameter when it starts one, so `monkey=1` is left alone.
-        let starts_parameter = before.is_empty()
-            || matches!(before.as_bytes()[before.len() - 1], b'?' | b'&');
+        let starts_parameter =
+            before.is_empty() || matches!(before.as_bytes()[before.len() - 1], b'?' | b'&');
         out.push_str(before);
         out.push_str("key=");
         let value = &from_key["key=".len()..];
